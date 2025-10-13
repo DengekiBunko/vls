@@ -1,0 +1,186 @@
+{
+  "api": {
+    "services": [
+      "HandlerService",
+      "LoggerService",
+      "StatsService"
+    ],
+    "tag": "api"
+  },
+  "burstObservatory": null,
+  "dns": null,
+  "fakedns": null,
+  "inbounds": [
+    {
+      "allocate": null,
+      "listen": "127.0.0.1",
+      "port": 62789,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "127.0.0.1"
+      },
+      "sniffing": null,
+      "streamSettings": null,
+      "tag": "api"
+    },
+    {
+      "allocate": {
+        "concurrency": 3,
+        "refresh": 5,
+        "strategy": "always"
+      },
+      "listen": null,
+      "port": 12345,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "email": "claw-xhttp",
+            "flow": "",
+            "id": "2584b733-9095-4bec-a7d5-62b473540f7a"
+          }
+        ],
+        "decryption": "none",
+        "fallbacks": []
+      },
+      "sniffing": {
+        "destOverride": [
+          "http",
+          "tls",
+          "quic",
+          "fakedns"
+        ],
+        "enabled": false,
+        "metadataOnly": false,
+        "routeOnly": false
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "none",
+        "xhttpSettings": {
+          "headers": {},
+          "host": "",
+          "mode": "auto",
+          "noSSEHeader": false,
+          "path": "/",
+          "scMaxBufferedPosts": 30,
+          "scMaxEachPostBytes": "1000000",
+          "scStreamUpServerSecs": "20-80",
+          "xPaddingBytes": "100-1000"
+        }
+      },
+      "tag": "inbound-12345"
+    },
+    {
+      "allocate": {
+        "concurrency": 3,
+        "refresh": 5,
+        "strategy": "always"
+      },
+      "listen": null,
+      "port": 22345,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "email": "claw-ws",
+            "flow": "",
+            "id": "3291c064-20b7-4471-b4a7-712047c218ff"
+          }
+        ],
+        "decryption": "none",
+        "fallbacks": []
+      },
+      "sniffing": {
+        "destOverride": [
+          "http",
+          "tls",
+          "quic",
+          "fakedns"
+        ],
+        "enabled": false,
+        "metadataOnly": false,
+        "routeOnly": false
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "none",
+        "wsSettings": {
+          "acceptProxyProtocol": false,
+          "headers": {},
+          "heartbeatPeriod": 0,
+          "host": "",
+          "path": "/"
+        }
+      },
+      "tag": "inbound-22345"
+    }
+  ],
+  "log": {
+    "access": "none",
+    "dnsLog": false,
+    "error": "",
+    "loglevel": "warning",
+    "maskAddress": ""
+  },
+  "observatory": null,
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "AsIs",
+        "noises": [],
+        "redirect": ""
+      },
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "settings": {},
+      "tag": "blocked"
+    }
+  ],
+  "policy": {
+    "levels": {
+      "0": {
+        "statsUserDownlink": true,
+        "statsUserUplink": true
+      }
+    },
+    "system": {
+      "statsInboundDownlink": true,
+      "statsInboundUplink": true,
+      "statsOutboundDownlink": false,
+      "statsOutboundUplink": false
+    }
+  },
+  "reverse": null,
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "inboundTag": [
+          "api"
+        ],
+        "outboundTag": "api",
+        "type": "field"
+      },
+      {
+        "ip": [
+          "geoip:private"
+        ],
+        "outboundTag": "blocked",
+        "type": "field"
+      },
+      {
+        "outboundTag": "blocked",
+        "protocol": [
+          "bittorrent"
+        ],
+        "type": "field"
+      }
+    ]
+  },
+  "stats": {},
+  "transport": null
+}
