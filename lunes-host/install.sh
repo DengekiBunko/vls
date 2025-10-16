@@ -33,6 +33,12 @@ fi
 rm -f Xray-linux-64.zip
 [ -f xray ] && mv -f xray xy || true
 [ -f Xray ] && mv -f Xray xy || true
+
+# 【关键修改】在这里增加一个检查，确保 xy 文件存在
+if [ ! -f "xy" ]; then
+    echo "[ERROR] Failed to set up xray executable. File 'xy' not found after download and unzip."
+    exit 1
+fi
 chmod +x xy
 
 openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
@@ -108,17 +114,14 @@ else
     echo "[cloudflared] found cert.pem, creating tunnel ..."
     set +e
     
-    # (推荐) 先尝试删除可能已存在的同名隧道，确保一个干净的开始。
-    # 如果隧道不存在，这条命令会失败，但 || true 会忽略这个错误，脚本继续执行。
+    # 【关键修改】先删除同名隧道，避免创建冲突
     "$CLOUDFLARED_BIN" tunnel delete "$TUNNEL_NAME" >/dev/null 2>&1 || true
 
-    # 使用正确的语法创建隧道，只提供隧道名称。
-    # 这里去掉了 || true，如果创建失败，你会看到明确的错误信息。
+    # 【关键修改】使用正确的语法创建隧道，并暴露错误
     echo "[cloudflared] Creating tunnel: $TUNNEL_NAME"
     "$CLOUDFLARED_BIN" tunnel create "$TUNNEL_NAME"
 
-    # 为创建的隧道添加 DNS 路由。
-    # 同样去掉了 || true。
+    # 【关键修改】为隧道添加 DNS 路由，并暴露错误
     echo "[cloudflared] Creating DNS route for $DOMAIN"
     "$CLOUDFLARED_BIN" tunnel route dns "$TUNNEL_NAME" "$DOMAIN"
 
