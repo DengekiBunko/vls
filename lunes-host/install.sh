@@ -1,61 +1,51 @@
 #!/usr/bin/env sh
 set -eu
 
-# === 用户可覆盖的环境变量 ===
+# ========================
+# 环境变量（可在运行时覆盖）
+# ========================
 DOMAIN="${DOMAIN:-node68.lunes.host}"
 PORT="${PORT:-10008}"
 UUID="${UUID:-2584b733-9095-4bec-a7d5-62b473540f7a}"
 HY2_PASSWORD="${HY2_PASSWORD:-vevc.HY2.Password}"
-WS_PATH="${WS_PATH:-/wspath}"
-TUNNEL_NAME="${TUNNEL_NAME:-lunes01}"
+WS_PATH="${WS_PATH:-/wspath}" # WebSocket 路径
 WORKDIR="${WORKDIR:-/home/container}"
 
-CLOUDFLARED_BIN="$WORKDIR/cloudflared"
-CLOUDFLARED_DIR="$WORKDIR/.cloudflared"
+# 目录和文件
 XY_DIR="$WORKDIR/xy"
 H2_DIR="$WORKDIR/h2"
 LOGDIR="$WORKDIR/logs"
 NODETXT="$WORKDIR/node.txt"
 
-echo "===== install.sh starting (init only) ====="
-echo "DOMAIN=$DOMAIN PORT=$PORT TUNNEL_NAME=$TUNNEL_NAME"
+echo "===== install.sh starting ====="
+echo "DOMAIN=$DOMAIN PORT=$PORT"
 
-mkdir -p "$WORKDIR" "$CLOUDFLARED_DIR" "$XY_DIR" "$H2_DIR" "$LOGDIR"
+# ========================
+# 下载 Node.js 文件
+# ========================
 cd "$WORKDIR"
-
-# ---------------------------
-# 1️⃣ 保留原下载 app.js/package.json 步骤
-# ---------------------------
-echo "[node] downloading app.js and package.json ..."
 curl -sSL -o app.js https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/app.js
 curl -sSL -o package.json https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/package.json
 
-# ---------------------------
-# 2️⃣ cloudflared 二进制下载
-# ---------------------------
-if [ ! -x "$CLOUDFLARED_BIN" ]; then
-  echo "[cloudflared] downloading to $CLOUDFLARED_BIN ..."
-  curl -fsSL -o "$CLOUDFLARED_BIN" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
-  chmod +x "$CLOUDFLARED_BIN"
-fi
-"$CLOUDFLARED_BIN" --version || true
-
-# ---------------------------
-# 3️⃣ Xray (xy) 下载+配置+证书
-# ---------------------------
+# ========================
+# Xray (VLESS+WS+TLS)
+# ========================
 mkdir -p "$XY_DIR"
 cd "$XY_DIR"
-curl -fsSL -o Xray-linux-64.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip" || true
-command -v unzip >/dev/null 2>&1 && [ -f Xray-linux-64.zip ] && unzip -o Xray-linux-64.zip >/dev/null 2>&1 && rm -f Xray-linux-64.zip
+curl -sSL -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+unzip -o Xray-linux-64.zip >/dev/null 2>&1 || true
+rm -f Xray-linux-64.zip
 [ -f xray ] && mv -f xray xy || true
 [ -f Xray ] && mv -f Xray xy || true
-[ -f "$XY_DIR/xy" ] && chmod +x "$XY_DIR/xy"
+chmod +x xy
 
+# 生成自签名 TLS
 openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
-  -keyout "$XY_DIR/key.pem" -out "$XY_DIR/cert.pem" -subj "/CN=$DOMAIN"
-chmod 600 "$XY_DIR/key.pem" "$XY_DIR/cert.pem"
+  -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
+chmod 600 key.pem cert.pem
 
-cat > "$XY_DIR/config.json" <<EOF
+# 生成 config.json
+cat > config.json <<EOF
 {
   "log": { "loglevel": "warning" },
   "inbounds": [
@@ -69,7 +59,11 @@ cat > "$XY_DIR/config.json" <<EOF
       "streamSettings": {
         "network": "ws",
         "security": "tls",
-        "tlsSettings": { "certificates": [{ "certificateFile": "$XY_DIR/cert.pem","keyFile": "$XY_DIR/key.pem" }] },
+        "tlsSettings": {
+          "certificates": [
+            { "certificateFile": "$XY_DIR/cert.pem", "keyFile": "$XY_DIR/key.pem" }
+          ]
+        },
         "wsSettings": { "path": "$WS_PATH" }
       }
     }
@@ -78,54 +72,52 @@ cat > "$XY_DIR/config.json" <<EOF
 }
 EOF
 
-# ---------------------------
-# 4️⃣ Hysteria2 下载+配置+证书
-# ---------------------------
+# ========================
+# Hysteria2 (修正 TLS 配置)
+# ========================
 mkdir -p "$H2_DIR"
 cd "$H2_DIR"
-curl -fsSL -o h2 "https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.4/hysteria-linux-amd64"
-chmod +x "$H2_DIR/h2"
-openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
-  -keyout "$H2_DIR/key.pem" -out "$H2_DIR/cert.pem" -subj "/CN=$DOMAIN"
-chmod 600 "$H2_DIR/key.pem" "$H2_DIR/cert.pem"
+curl -sSL -o h2 https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.4/hysteria-linux-amd64
+chmod +x h2
 
-cat > "$H2_DIR/config.yaml" <<EOF
+openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
+  -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
+chmod 600 key.pem cert.pem
+
+cat > config.yaml <<EOF
 listen: 0.0.0.0:$PORT
-cert: $H2_DIR/cert.pem
-key: $H2_DIR/key.pem
+tls:
+  cert: $H2_DIR/cert.pem
+  key: $H2_DIR/key.pem
 auth:
   type: password
   password: "$HY2_PASSWORD"
 EOF
 
-# ---------------------------
-# 5️⃣ Cloudflared interactive login (生成 tunnel，不运行)
-# ---------------------------
-echo ""
-echo "[cloudflared] interactive login (open URL in browser)..."
-set +e
-"$CLOUDFLARED_BIN" login
-LOGIN_RC=$?
-set -e
-[ $LOGIN_RC -ne 0 ] && echo "[cloudflared] login returned non-zero, may be okay if already logged in"
-
-# Poll cert.pem
-WAIT=0; MAX=300; SLEEP=5; CERT_FOUND=""
-while [ $WAIT -lt $MAX ]; do
-  for d in "$CLOUDFLARED_DIR" "$HOME/.cloudflared" "/root/.cloudflared" "/.cloudflared"; do
-    [ -f "$d/cert.pem" ] && { CERT_FOUND="$d/cert.pem"; break 2; }
-  done
-  echo "[cloudflared] waiting for cert.pem... $WAIT/$MAX"
-  sleep $SLEEP
-  WAIT=$((WAIT + SLEEP))
-done
-
-if [ -z "$CERT_FOUND" ]; then
-  echo "[cloudflared] cert.pem not found. Place manually in $CLOUDFLARED_DIR"
-else
-  echo "[cloudflared] found cert: $CERT_FOUND"
-  [ "$(dirname "$CERT_FOUND")" != "$CLOUDFLARED_DIR" ] && cp -a "$(dirname "$CERT_FOUND")"/* "$CLOUDFLARED_DIR"/ && chmod 600 "$CLOUDFLARED_DIR"/*
+# ========================
+# 生成 Node URL
+# ========================
+ENC_PATH="$WS_PATH"
+ENC_PWD="$HY2_PASSWORD"
+if command -v node >/dev/null 2>&1; then
+  ENC_PATH=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH")
+  ENC_PWD=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$HY2_PASSWORD")
 fi
 
-echo "install.sh finished. Node.js app remains intact."
-echo "Start the server with: node /home/container/app.js"
+VLESS_URL="vless://$UUID@$DOMAIN:$PORT?encryption=none&security=tls&type=ws&host=$DOMAIN&path=${ENC_PATH}&sni=$DOMAIN#lunes-ws-tls"
+HY2_URL="hysteria2://$ENC_PWD@$DOMAIN:$PORT?insecure=1#lunes-hy2"
+
+echo "$VLESS_URL" > "$NODETXT"
+echo "$HY2_URL" >> "$NODETXT"
+
+# ========================
+# 输出信息
+# ========================
+echo "============================================================"
+echo "🚀 VLESS WS+TLS & HY2 Node Info"
+echo "------------------------------------------------------------"
+echo "$VLESS_URL"
+echo "$HY2_URL"
+echo "============================================================"
+echo "✅ install.sh finished. You can start the server with:"
+echo "   node $WORKDIR/app.js"
