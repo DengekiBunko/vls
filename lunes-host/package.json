@@ -1,9 +1,9 @@
 {
-  "name": "lunes-host-node",
+  "name": "lunes-host",
   "version": "1.0.0",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js"
+    "start": "node /home/container/app.js"
   },
-  "dependencies": {}
+  "author": "vevc"
 }
