@@ -27,7 +27,7 @@ cd "$WORKDIR/xy"
 
 curl -sSL -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
 if command -v unzip >/dev/null 2>&1; then
-    unzip -o Xray-linux-64.zip >/dev/null 2>&1 || true
+    unzip -o Xray-linux-64.zip >/dev/null 2>&1 || true
 fi
 rm -f Xray-linux-64.zip
 [ -f xray ] && mv -f xray xy || true
@@ -38,21 +38,21 @@ openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout key.pem -out cert.p
 
 cat > config.json <<EOF
 {
-  "log": { "loglevel": "warning" },
-  "inbounds": [
-    {
-      "port": $PORT,
-      "protocol": "vless",
-      "settings": { "clients": [{ "id": "$UUID", "email": "lunes-ws-tls" }], "decryption": "none" },
-      "streamSettings": {
-        "network": "ws",
-        "security": "tls",
-        "tlsSettings": { "certificates": [{ "certificateFile": "$WORKDIR/xy/cert.pem", "keyFile": "$WORKDIR/xy/key.pem" }] },
-        "wsSettings": { "path": "$WS_PATH" }
-      }
-    }
-  ],
-  "outbounds": [{ "protocol": "freedom" }]
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "port": $PORT,
+      "protocol": "vless",
+      "settings": { "clients": [{ "id": "$UUID", "email": "lunes-ws-tls" }], "decryption": "none" },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": { "certificates": [{ "certificateFile": "$WORKDIR/xy/cert.pem", "keyFile": "$WORKDIR/xy/key.pem" }] },
+        "wsSettings": { "path": "$WS_PATH" }
+      }
+    }
+  ],
+  "outbounds": [{ "protocol": "freedom" }]
 }
 EOF
 
@@ -66,14 +66,17 @@ curl -sSL -o h2 https://github.com/apernet/hysteria/releases/download/app%2Fv2.6
 chmod +x h2
 openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
 
+# ******** Hysteria2 配置修改开始 ********
 cat > config.yaml <<EOF
 listen: 0.0.0.0:$PORT
-cert: $WORKDIR/h2/cert.pem
-key: $WORKDIR/h2/key.pem
 auth:
   type: password
   password: "$HY2_PASSWORD"
+tls: # 增加了 tls 块，以符合 Hysteria2 v2 的配置格式
+  cert: $WORKDIR/h2/cert.pem
+  key: $WORKDIR/h2/key.pem
 EOF
+# ******** Hysteria2 配置修改结束 ********
 
 # ---------------------------
 # Cloudflare Tunnel 交互式登录 + tunnel 创建
@@ -83,9 +86,9 @@ CLOUDFLARED_DIR="$WORKDIR/.cloudflared"
 mkdir -p "$CLOUDFLARED_DIR"
 
 if [ ! -x "$CLOUDFLARED_BIN" ]; then
-    echo "[cloudflared] downloading cloudflared ..."
-    curl -fsSL -o "$CLOUDFLARED_BIN" https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-    chmod +x "$CLOUDFLARED_BIN"
+    echo "[cloudflared] downloading cloudflared ..."
+    curl -fsSL -o "$CLOUDFLARED_BIN" https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+    chmod +x "$CLOUDFLARED_BIN"
 fi
 
 echo "-------- Cloudflared interactive login --------"
@@ -95,24 +98,24 @@ set -e
 
 WAIT=0 MAX=300 SLEEP=5 CERT=""
 while [ $WAIT -lt $MAX ]; do
-    if [ -f "$CLOUDFLARED_DIR/cert.pem" ]; then
-        CERT="$CLOUDFLARED_DIR/cert.pem"
-        break
-    fi
-    echo "[cloudflared] waiting for cert.pem $WAIT/$MAX"
-    sleep $SLEEP
-    WAIT=$((WAIT + SLEEP))
+    if [ -f "$CLOUDFLARED_DIR/cert.pem" ]; then
+        CERT="$CLOUDFLARED_DIR/cert.pem"
+        break
+    fi
+    echo "[cloudflared] waiting for cert.pem $WAIT/$MAX"
+    sleep $SLEEP
+    WAIT=$((WAIT + SLEEP))
 done
 
 if [ -z "$CERT" ]; then
-    echo "[cloudflared] cert.pem not found. 请放置 cert.pem 到 $CLOUDFLARED_DIR 或手动 login"
+    echo "[cloudflared] cert.pem not found. 请放置 cert.pem 到 $CLOUDFLARED_DIR 或手动 login"
 else
-    echo "[cloudflared] found cert.pem, creating tunnel ..."
-    set +e
-    "$CLOUDFLARED_BIN" tunnel create "$TUNNEL_NAME" --credentials-file "$CLOUDFLARED_DIR/$TUNNEL_NAME.json" 2>&1 || true
-    "$CLOUDFLARED_BIN" tunnel route dns "$TUNNEL_NAME" "$DOMAIN" 2>&1 || true
-    set -e
-    echo "[cloudflared] initialization done."
+    echo "[cloudflared] found cert.pem, creating tunnel ..."
+    set +e
+    "$CLOUDFLARED_BIN" tunnel create "$TUNNEL_NAME" --credentials-file "$CLOUDFLARED_DIR/$TUNNEL_NAME.json" 2>&1 || true
+    "$CLOUDFLARED_BIN" tunnel route dns "$TUNNEL_NAME" "$DOMAIN" 2>&1 || true
+    set -e
+    echo "[cloudflared] initialization done."
 fi
 
 # ---------------------------
