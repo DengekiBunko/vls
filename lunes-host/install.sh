@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 
+# 严格模式：遇到错误即退出
 set -eu
 
 # ---------------------------
@@ -17,7 +18,7 @@ WORKDIR="${WORKDIR:-/home/container}"
 # 下载 app.js 和 package.json
 # ---------------------------
 echo "[node] downloading app.js and package.json ..."
-# 注意：这里应该指向你最新的 app.js 文件，或者直接使用上面的内容覆盖 /home/container/app.js
+# 假设您已将最新 app.js (带 config.yml 路径) 上传到您的仓库
 curl -sSL -o "$WORKDIR/app.js" https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/app.js || true
 curl -sSL -o "$WORKDIR/package.json" https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/package.json
 
@@ -27,6 +28,7 @@ curl -sSL -o "$WORKDIR/package.json" https://raw.githubusercontent.com/vevc/one-
 mkdir -p "$WORKDIR/xy"
 cd "$WORKDIR/xy"
 
+echo "[Xray] downloading and installing Xray core..."
 curl -sSL -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
 if command -v unzip >/dev/null 2>&1; then
     unzip -o Xray-linux-64.zip >/dev/null 2>&1 || true
@@ -36,9 +38,8 @@ rm -f Xray-linux-64.zip
 [ -f Xray ] && mv -f Xray xy || true
 chmod +x xy
 
-# 【修改】移除自签证书相关命令，因为 TLS 将由 Cloudflared 终止
-# rm -f key.pem cert.pem
-
+# 【重要修正】由于 Cloudflared 负责 TLS 终止，Xray 本地不再需要 TLS。
+# 必须移除 tlsSettings 整个块，否则 Xray 无法启动。
 cat > config.json <<EOF
 {
   "log": { "loglevel": "warning" },
@@ -59,14 +60,13 @@ cat > config.json <<EOF
 EOF
 
 # ---------------------------
-# Hysteria2 (h2) 配置
+# Hysteria2 (h2) 配置 (保持不变)
 # ---------------------------
-# ... (Hysteria2 部分保持不变，因为它不通过 Cloudflared Tunnel)
 mkdir -p /home/container/h2
 cd /home/container/h2
 curl -sSL -o h2 https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.2/hysteria-linux-amd64
 curl -sSL -o config.yaml https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/hysteria-config.yaml
-# 继续为 Hysteria2 生成自签证书，因为它需要直接处理 TLS 流量
+# Hysteria2 仍需自签证书
 openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
 chmod +x h2
 sed -i "s/10008/$PORT/g" config.yaml
@@ -109,22 +109,24 @@ if [ -z "$CERT" ]; then
 else
     echo "[cloudflared] found cert.pem, creating tunnel (if not exists) and routing DNS ..."
     set +e
-    # 【修改】移除 --credentials-file 并捕获输出以提取 ID
+    # 尝试创建隧道并捕获其 ID
     CREATE_OUTPUT=$("$CLOUDFLARED_BIN" tunnel create "$TUNNEL_NAME" 2>&1)
     echo "$CREATE_OUTPUT"
-    # 从输出中提取 Tunnel ID (ID 在 'id ' 之后)
-    TUNNEL_ID=$(echo "$CREATE_OUTPUT" | grep 'id' | awk '{print $NF}' | sed 's/.$//' | sed 's/\.$//')
+    # 从输出中提取 Tunnel ID。注意：如果隧道已存在，grep 可能不匹配，因此需要回退。
+    TUNNEL_ID=$(echo "$CREATE_OUTPUT" | grep 'Created tunnel' | awk '{print $NF}')
+    # 如果创建命令没有返回 ID (通常发生在隧道已存在时)，尝试通过 list 命令获取
+    if [ -z "$TUNNEL_ID" ]; then
+        echo "[cloudflared] Tunnel already exists or ID not in output. Attempting to get ID from list."
+        # 从 list 命令中获取 ID
+        TUNNEL_ID=$("$CLOUDFLARED_BIN" tunnel list | grep -w "$TUNNEL_NAME" | awk '{print $NF}' | head -n 1)
+    fi
 
     "$CLOUDFLARED_BIN" tunnel route dns "$TUNNEL_NAME" "$DOMAIN" 2>&1 || true
     set -e
     
-    # 【新增】创建 Cloudflared 的 config.yml 配置文件
-    if [ -z "$TUNNEL_ID" ]; then
-        echo "[cloudflared WARNING] Could not extract TUNNEL_ID. Attempting to get it via 'cloudflared tunnel list'."
-        # 尝试通过 list 命令获取 ID，以防 create 命令只返回已存在信息
-        TUNNEL_ID=$("$CLOUDFLARED_BIN" tunnel list | grep "$TUNNEL_NAME" | awk '{print $2}' | head -n 1)
-    fi
-
+    # ---------------------------------
+    # 【关键】生成 config.yml
+    # ---------------------------------
     if [ -z "$TUNNEL_ID" ]; then
         echo "[cloudflared ERROR] Could not determine TUNNEL_ID. Cloudflared launch will likely fail."
     else
@@ -135,8 +137,6 @@ credentials-file: $CLOUDFLARED_DIR/$TUNNEL_ID.json
 ingress:
   - hostname: $DOMAIN
     service: http://localhost:$PORT
-    # Cloudflared 终止 TLS，将 http 转发到 Xray 的 VLESS+WS 入站 (security: none)
-    # VLESS+WS 通常需要一个 OriginRequest 配置来处理 WebSocket 头
     originRequest:
       noTLSVerify: true
   - service: http_status:404
@@ -149,12 +149,10 @@ fi
 # ---------------------------
 # 构建 VLESS 和 HY2 链接
 # ---------------------------
-# ... (这部分保持不变)
 ENC_PATH=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH")
 ENC_PWD=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$HY2_PASSWORD")
 
 # VLESS-WS 使用 443 端口 (Cloudflare Tunnel)
-# 注意：虽然 Xray 本地移除了 TLS，但客户端连接的是 Cloudflare 的 443 端口，所以客户端配置依然是 security=tls
 VLESS_URL="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&host=$DOMAIN&path=${ENC_PATH}&sni=$DOMAIN#lunes-ws-tls"
 
 # HY2 使用 $PORT 端口 (直连)
