@@ -18,7 +18,7 @@ WORKDIR="${WORKDIR:-/home/container}"
 # 下载 app.js 和 package.json
 # ---------------------------
 echo "[node] downloading app.js and package.json ..."
-# 假设您已将最新 app.js (带 config.yml 路径) 上传到您的仓库
+# 确保使用您最新版本的 app.js
 curl -sSL -o "$WORKDIR/app.js" https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/app.js || true
 curl -sSL -o "$WORKDIR/package.json" https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/package.json
 
@@ -34,12 +34,21 @@ if command -v unzip >/dev/null 2>&1; then
     unzip -o Xray-linux-64.zip >/dev/null 2>&1 || true
 fi
 rm -f Xray-linux-64.zip
-[ -f xray ] && mv -f xray xy || true
-[ -f Xray ] && mv -f Xray xy || true
+
+# 检查解压后的文件是否存在并重命名，确保 'xy' 文件能被创建
+if [ -f xray ]; then
+    mv -f xray xy
+elif [ -f Xray ]; then
+    mv -f Xray xy
+else
+    echo "[Xray ERROR] Xray executable (xray or Xray) not found after extraction!"
+    exit 1
+fi
+
 chmod +x xy
 
 # 【重要修正】由于 Cloudflared 负责 TLS 终止，Xray 本地不再需要 TLS。
-# 必须移除 tlsSettings 整个块，否则 Xray 无法启动。
+# 移除 tlsSettings 整个块。
 cat > config.json <<EOF
 {
   "log": { "loglevel": "warning" },
@@ -112,9 +121,9 @@ else
     # 尝试创建隧道并捕获其 ID
     CREATE_OUTPUT=$("$CLOUDFLARED_BIN" tunnel create "$TUNNEL_NAME" 2>&1)
     echo "$CREATE_OUTPUT"
-    # 从输出中提取 Tunnel ID。注意：如果隧道已存在，grep 可能不匹配，因此需要回退。
+    # 从输出中提取 Tunnel ID (仅在隧道新创建时)
     TUNNEL_ID=$(echo "$CREATE_OUTPUT" | grep 'Created tunnel' | awk '{print $NF}')
-    # 如果创建命令没有返回 ID (通常发生在隧道已存在时)，尝试通过 list 命令获取
+    # 如果 ID 未从创建输出中提取 (隧道已存在)，尝试通过 list 命令获取
     if [ -z "$TUNNEL_ID" ]; then
         echo "[cloudflared] Tunnel already exists or ID not in output. Attempting to get ID from list."
         # 从 list 命令中获取 ID
