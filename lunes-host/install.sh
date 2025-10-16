@@ -24,8 +24,9 @@ mkdir -p /home/container
 cd /home/container
 if [ ! -f "cloudflared" ]; then
   echo "[Cloudflared] 下载中..."
-  curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.tgz | tar -xz
+  curl -L -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
   chmod +x cloudflared
+  echo "[Cloudflared] ✅ 下载完成"
   rm -f cloudflared.tgz
 fi
 
