@@ -1,32 +1,19 @@
 {
-  "log": {
-    "loglevel": "warning"
-  },
+  "log": { "loglevel": "warning" },
   "inbounds": [
     {
       "port": 10008,
       "protocol": "vless",
       "settings": {
-        "clients": [
-          {
-            "id": "YOUR_UUID",
-            "email": "lunes-ws-tls"
-          }
-        ],
+        "clients": [ { "id": "YOUR_UUID", "email": "lunes-ws" } ],
         "decryption": "none"
       },
       "streamSettings": {
         "network": "ws",
         "security": "none",
-        "wsSettings": {
-          "path": "/YOUR_WS_PATH"
-        }
+        "wsSettings": { "path": "/wspath" }
       }
     }
   ],
-  "outbounds": [
-    {
-      "protocol": "freedom"
-    }
-  ]
+  "outbounds": [ { "protocol": "freedom" } ]
 }
