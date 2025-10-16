@@ -12,14 +12,12 @@ const apps = [
   },
   {
     name: 'h2',
-    // hysteria: server -c config.yaml
     binaryPath: '/home/container/h2/h2',
     args: ['server', '-c', '/home/container/h2/config.yaml'],
     cwd: '/home/container/h2'
   }
 ];
 
-// If CFTUNNEL_TOKEN is present, add cloudflared as an app to be managed
 if (CFTUNNEL_TOKEN) {
   apps.push({
     name: 'cloudflared',
@@ -28,11 +26,11 @@ if (CFTUNNEL_TOKEN) {
     cwd: '/home/container'
   });
 } else {
-  console.warn('[WARN] CFTUNNEL_TOKEN not found in env. cloudflared will not be started by app.js.');
+  console.warn('[WARN] CFTUNNEL_TOKEN not set; cloudflared will not be started by app.js.');
 }
 
-function spawnApp(app) {
-  console.log(`[START] Launching ${app.name}: ${app.binaryPath} ${app.args.join(' ')}`);
+function run(app) {
+  console.log(`[START] ${app.name}: ${app.binaryPath} ${app.args.join(' ')}`);
   const child = spawn(app.binaryPath, app.args, {
     stdio: 'inherit',
     cwd: app.cwd || undefined,
@@ -40,21 +38,16 @@ function spawnApp(app) {
   });
 
   child.on('exit', (code, signal) => {
-    console.log(`[EXIT] ${app.name} exited (code=${code} signal=${signal}). Restarting in 3s...`);
-    setTimeout(() => spawnApp(app), 3000);
+    console.log(`[EXIT] ${app.name} exited (code=${code} signal=${signal}), restarting in 3s...`);
+    setTimeout(() => run(app), 3000);
   });
 
   child.on('error', (err) => {
-    console.error(`[ERROR] Failed to start ${app.name}: ${err.message}. Retry in 5s...`);
-    setTimeout(() => spawnApp(app), 5000);
+    console.error(`[ERROR] ${app.name} start error:`, err.message);
+    setTimeout(() => run(app), 5000);
   });
 }
 
-// start all apps
-for (const app of apps) spawnApp(app);
+for (const a of apps) run(a);
 
-// keep node running
-process.on('SIGINT', () => {
-  console.log('[SIGINT] Exiting, letting child processes stop.');
-  process.exit(0);
-});
+process.on('SIGINT', () => { console.log('[SIGINT] quitting'); process.exit(0); });
