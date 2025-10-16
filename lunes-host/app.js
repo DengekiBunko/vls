@@ -4,8 +4,10 @@ const path = require('path');
 // ---------------------------
 // 配置变量 (确保这些与 install.sh 中的一致)
 // ---------------------------
-const WORKDIR = '/home/container';
-const TUNNEL_NAME = process.env.TUNNEL_NAME || 'mytunnel'; // 从环境变量读取，或使用默认值
+const WORKDIR = process.env.WORKDIR || '/home/container';
+const TUNNEL_NAME = process.env.TUNNEL_NAME || 'mytunnel'; // 从部署命令读取 tunnel 名称
+const DOMAIN = process.env.DOMAIN || 'node68.lunes.host';
+const PORT = process.env.PORT || '10008';
 
 // ---------------------------
 // 构建命令
@@ -19,7 +21,7 @@ const hy2ConfigPath = path.join(WORKDIR, 'h2', 'config.yaml');
 const hy2Command = `${hy2Path} server --config ${hy2ConfigPath}`;
 
 const cloudflaredPath = path.join(WORKDIR, 'cloudflared');
-const cloudflaredCommand = `${cloudflaredPath} tunnel --no-autoupdate run --token ${process.env.TUNNEL_TOKEN}`;
+const cloudflaredCommand = `${cloudflaredPath} tunnel --no-autoupdate run ${TUNNEL_NAME}`;
 
 // ---------------------------
 // 启动函数
@@ -28,7 +30,6 @@ function runCommand(command, name) {
   console.log(`[Launcher] Starting ${name}...`);
   const child = exec(command);
 
-  // 将子进程的输出实时打印到主进程的控制台
   child.stdout.on('data', (data) => {
     process.stdout.write(`[${name}] ${data}`);
   });
@@ -45,16 +46,14 @@ function runCommand(command, name) {
 }
 
 // ---------------------------
-// 启动所有服务
+// 启动服务
 // ---------------------------
-//【重要】注意：原始脚本中没有TUNNEL_TOKEN，但这是 `cloudflared tunnel run` 更现代、更可靠的运行方式。
-// 为了简单起见，我们先用旧的方式，它会依赖于已登录的 cert.pem。
-const cloudflaredRunCommand = `${cloudflaredPath} tunnel --no-autoupdate run ${TUNNEL_NAME}`;
-
-
+// VLESS-WS 走 Cloudflared Tunnel
+runCommand(cloudflaredCommand, 'Cloudflared');
 runCommand(xrayCommand, 'Xray');
+
+// Hysteria2 直连
 runCommand(hy2Command, 'Hysteria2');
-runCommand(cloudflaredRunCommand, 'Cloudflared');
 
 console.log('[Launcher] All services are being started.');
 
