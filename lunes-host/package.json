@@ -1,11 +1,9 @@
 {
-  "name": "lunes-host",
+  "name": "lunes-host-node",
   "version": "1.0.0",
-  "description": "Xray & Hysteria2 + cloudflared startup",
   "main": "app.js",
   "scripts": {
     "start": "node app.js"
   },
-  "author": "vevc",
-  "license": "MIT"
+  "dependencies": {}
 }
