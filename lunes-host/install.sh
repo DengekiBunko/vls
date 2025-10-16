@@ -1,164 +1,142 @@
 #!/usr/bin/env sh
-set -eu
+set -e
 
-# -------------------------
-# Config via env (do not hardcode sensitive values here)
-# -------------------------
-DOMAIN="${DOMAIN:-node24.lunes.host}"
+# 环境变量（部署时传入）
+DOMAIN="${DOMAIN:-node68.lunes.host}"
 PORT="${PORT:-3460}"
-UUID="${UUID:-2584b733-9095-4bec-a7d5-62b473540f7f9e}"
+UUID="${UUID:-2584b733-9095-4bec-a7d5-62b473540f7a}"
 HY2_PASSWORD="${HY2_PASSWORD:-vevc.HY2.Password}"
-WS_PATH="${WS_PATH:-/wspath}"
-CFTUNNEL_TOKEN="${CFTUNNEL_TOKEN:-}"     # optional: put in Pterodactyl Environment
-CFTUNNEL_NAME="${CFTUNNEL_NAME:-}"       # optional: tunnel name/ID if you have it
-PUBLIC_HOSTNAME="${PUBLIC_HOSTNAME:-}"    # optional: e.g. luneshost01.xdzw.dpdns.org
-# -------------------------
+WS_PATH="${WS_PATH:-/ws}"
+CFTUNNEL_TOKEN="${CFTUNNEL_TOKEN:-}"
 
-echo "[install.sh] starting"
+echo "===== 🚀 Lunes Host 自部署启动 ====="
+echo "Domain: $DOMAIN"
+echo "Port: $PORT"
+echo "UUID: $UUID"
+echo "HY2 Password: $HY2_PASSWORD"
+echo "CF Tunnel Token: ${CFTUNNEL_TOKEN:+已设置}"
 
-cd /home/container || exit 1
-mkdir -p /home/container/xy /home/container/h2 /home/container/.cloudflared
+mkdir -p /home/container
 
-# --- download app.js & package.json (keeps original app.js if exists) ---
-curl -sSL -o /home/container/app.js https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/app.js || true
-curl -sSL -o /home/container/package.json https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/package.json || true
-chmod +x /home/container/app.js || true
-
-# --- Xray (xy) download & config (keeps structure of your original script) ---
-cd /home/container/xy
-echo "[install.sh] downloading xray..."
-curl -sSL -o Xray-linux-64.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip" || true
-if command -v unzip >/dev/null 2>&1; then
-  unzip -o Xray-linux-64.zip || true
-  rm -f Xray-linux-64.zip
+# -----------------------------------------------------
+# 1️⃣ 下载 Cloudflared
+# -----------------------------------------------------
+cd /home/container
+if [ ! -f "cloudflared" ]; then
+  echo "[Cloudflared] 下载中..."
+  curl -sSL -o cloudflared.tgz https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.tgz
+  tar -xzf cloudflared.tgz || true
+  chmod +x cloudflared
+  rm -f cloudflared.tgz
 fi
-# normalize binary name
-if [ -f xray ]; then mv -f xray xy || true; fi
-if [ -f Xray ]; then mv -f Xray xy || true; fi
-chmod +x /home/container/xy/xy || true
 
-# Create Xray config using your original template structure
-cat > /home/container/xy/config.json <<'EOF'
+# -----------------------------------------------------
+# 2️⃣ 下载并配置 Xray (VLESS + WS + TLS)
+# -----------------------------------------------------
+mkdir -p /home/container/xy
+cd /home/container/xy
+
+curl -sSL -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+unzip -o Xray-linux-64.zip
+mv xray xy
+chmod +x xy
+rm -f Xray-linux-64.zip
+
+# 写入配置
+cat > config.json <<EOF
 {
-  "log": {
-    "loglevel": "warning"
-  },
+  "log": { "loglevel": "warning" },
   "inbounds": [
     {
-      "port": 10008,
+      "port": $PORT,
       "protocol": "vless",
       "settings": {
-        "clients": [
-          {
-            "id": "YOUR_UUID",
-            "email": "lunes-ws-tls"
-          }
-        ],
+        "clients": [{ "id": "$UUID", "email": "lunes-ws-tls" }],
         "decryption": "none"
       },
       "streamSettings": {
         "network": "ws",
         "security": "tls",
         "tlsSettings": {
-          "certificates": [
-            {
-              "certificateFile": "/home/container/xy/cert.pem",
-              "keyFile": "/home/container/xy/key.pem"
-            }
-          ]
+          "certificates": [{ "certificateFile": "/home/container/xy/cert.pem", "keyFile": "/home/container/xy/key.pem" }]
         },
-        "wsSettings": {
-          "path": "YOUR_WS_PATH"
-        }
+        "wsSettings": { "path": "$WS_PATH" }
       }
     }
   ],
-  "outbounds": [
-    {
-      "protocol": "freedom"
-    }
-  ]
+  "outbounds": [{ "protocol": "freedom" }]
 }
 EOF
 
-# generate origin certs for xray (use DOMAIN as CN - keeping original behavior)
-echo "[install.sh] generating xray self-signed cert..."
+# 生成证书
 openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
-  -keyout /home/container/xy/key.pem -out /home/container/xy/cert.pem -subj "/CN=${DOMAIN}" || true
-chmod 600 /home/container/xy/key.pem /home/container/xy/cert.pem || true
+  -keyout /home/container/xy/key.pem \
+  -out /home/container/xy/cert.pem \
+  -subj "/CN=$DOMAIN"
 
-# replace placeholders in xray config (keeps your original sed replacements)
-sed -i "s/10008/$PORT/g" /home/container/xy/config.json
-sed -i "s/YOUR_UUID/$UUID/g" /home/container/xy/config.json
-case "$WS_PATH" in
-  /*) ;;
-  *) WS_PATH="/$WS_PATH" ;;
-esac
-sed -i "s|YOUR_WS_PATH|$WS_PATH|g" /home/container/xy/config.json
+# VLESS 链接
+vlessUrl="vless://$UUID@$DOMAIN:$PORT?encryption=none&security=tls&type=ws&host=$DOMAIN&path=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH")&sni=$DOMAIN#lunes-ws-tls"
 
-# Build VLESS URL — preserve original behavior but prefer PUBLIC_HOSTNAME if set
-# If you provided PUBLIC_HOSTNAME, we will write node.txt using that (port 443)
-if [ -n "$PUBLIC_HOSTNAME" ]; then
-  ENC_PATH=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH" 2>/dev/null || printf '%s' "%2Fwspath")
-  VLESS_URL="vless://$UUID@$PUBLIC_HOSTNAME:443?encryption=none&security=tls&type=ws&host=$PUBLIC_HOSTNAME&path=$ENC_PATH&sni=$PUBLIC_HOSTNAME#lunes-ws-tls"
-else
-  ENC_PATH=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH" 2>/dev/null || printf '%s' "%2Fwspath")
-  VLESS_URL="vless://$UUID@$DOMAIN:$PORT?encryption=none&security=tls&type=ws&host=$DOMAIN&path=$ENC_PATH&sni=$DOMAIN#lunes-ws-tls"
-fi
-
-# --- Hysteria2 (h2) original section preserved (download + fetch config + cert) ---
+# -----------------------------------------------------
+# 3️⃣ HY2 节点
+# -----------------------------------------------------
+mkdir -p /home/container/h2
 cd /home/container/h2
-echo "[install.sh] downloading hysteria binary..."
-curl -sSL -o h2 "https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.2/hysteria-linux-amd64" || true
-chmod +x /home/container/h2/h2 || true
 
-# Fetch the original hysteria config from your repo (preserve your original content)
-echo "[install.sh] fetching original hysteria-config.yaml..."
-curl -sSL -o /home/container/h2/config.yaml https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/hysteria-config.yaml || true
+curl -sSL -o h2 https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.4/hysteria-linux-amd64
+chmod +x h2
 
-# Generate cert & key in h2 directory as original script did
-echo "[install.sh] generating h2 cert..."
-openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout /home/container/h2/key.pem -out /home/container/h2/cert.pem -subj "/CN=${DOMAIN}" || true
-chmod 600 /home/container/h2/key.pem /home/container/h2/cert.pem || true
+cat > config.yaml <<EOF
+listen: :$PORT
+auth:
+  type: password
+  password: $HY2_PASSWORD
+tls:
+  cert: /home/container/h2/cert.pem
+  key: /home/container/h2/key.pem
+EOF
 
-# make h2 executable
-chmod +x /home/container/h2/h2 || true
+openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
+  -keyout /home/container/h2/key.pem \
+  -out /home/container/h2/cert.pem \
+  -subj "/CN=$DOMAIN"
 
-# replace placeholders in fetched config.yaml (this is your original sed behavior)
-sed -i "s/10008/$PORT/g" /home/container/h2/config.yaml || true
-sed -i "s/HY2_PASSWORD/$HY2_PASSWORD/g" /home/container/h2/config.yaml || true
+encodedHy2Pwd=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$HY2_PASSWORD")
+hy2Url="hysteria2://$encodedHy2Pwd@$DOMAIN:$PORT?insecure=1#lunes-hy2"
 
-# Build HY2 URL — if PUBLIC_HOSTNAME set, use it with 443; else fallback to DOMAIN:PORT
-if [ -n "$PUBLIC_HOSTNAME" ]; then
-  ENC_HY2_PWD=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$HY2_PASSWORD" 2>/dev/null || printf '%s' "password")
-  HY2_URL="hysteria2://$ENC_HY2_PWD@$PUBLIC_HOSTNAME:443?insecure=1#lunes-hy2"
-else
-  ENC_HY2_PWD=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$HY2_PASSWORD" 2>/dev/null || printf '%s' "password")
-  HY2_URL="hysteria2://$ENC_HY2_PWD@$DOMAIN:$PORT?insecure=1#lunes-hy2"
-fi
+# -----------------------------------------------------
+# 4️⃣ 启动管理 app.js
+# -----------------------------------------------------
+cat > /home/container/app.js <<'EOF'
+const { spawn } = require("child_process");
 
-# --- cloudflared - download binary ---
-cd /home/container
-echo "[install.sh] downloading cloudflared..."
-curl -L -o /home/container/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" || true
-chmod +x /home/container/cloudflared || true
-if [ -x /home/container/cloudflared ]; then /home/container/cloudflared --version || true; fi
+const processes = [
+  { name: "xy", cmd: "/home/container/xy/xy", args: ["-c", "/home/container/xy/config.json"] },
+  { name: "h2", cmd: "/home/container/h2/h2", args: ["server", "-c", "/home/container/h2/config.yaml"] },
+  process.env.CFTUNNEL_TOKEN ? { name: "cloudflared", cmd: "/home/container/cloudflared", args: ["tunnel", "run", "--token", process.env.CFTUNNEL_TOKEN] } : null
+].filter(Boolean);
 
-# If token provided, save it to .cloudflared/token.txt (prefer panel env)
-if [ -n "$CFTUNNEL_TOKEN" ]; then
-  printf '%s' "$CFTUNNEL_TOKEN" > /home/container/.cloudflared/token.txt
-  chmod 600 /home/container/.cloudflared/token.txt || true
-  echo "[install.sh] saved CFTUNNEL_TOKEN to /home/container/.cloudflared/token.txt"
-fi
+for (const app of processes) {
+  const proc = spawn(app.cmd, app.args, { stdio: "inherit" });
+  proc.on("exit", (code) => {
+    console.log(`[EXIT] ${app.name} exited with code: ${code}`);
+    setTimeout(() => {
+      console.log(`[RESTART] Restarting ${app.name}...`);
+      spawn(app.cmd, app.args, { stdio: "inherit" });
+    }, 2000);
+  });
+}
+EOF
 
-# Write node links
-echo "$VLESS_URL" > /home/container/node.txt
-echo "$HY2_URL" >> /home/container/node.txt
-
+# -----------------------------------------------------
+# 5️⃣ 输出节点信息
+# -----------------------------------------------------
 echo "============================================================"
-echo "[install.sh] setup complete"
-echo " - Xray config: /home/container/xy/config.json"
-echo " - Hysteria config: /home/container/h2/config.yaml"
-echo " - node links: /home/container/node.txt"
-echo " - cloudflared binary: /home/container/cloudflared"
+echo "✅ VLESS + HY2 部署完成"
+echo "------------------------------------------------------------"
+echo "VLESS: $vlessUrl"
+echo "HY2:   $hy2Url"
 echo "============================================================"
+
+echo "$vlessUrl" > /home/container/node.txt
+echo "$hy2Url" >> /home/container/node.txt
