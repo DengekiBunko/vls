@@ -25,14 +25,40 @@ curl -sSL -o "$WORKDIR/package.json" https://raw.githubusercontent.com/vevc/one-
 mkdir -p "$WORKDIR/xy"
 cd "$WORKDIR/xy"
 
+# 下载 Xray
+echo "[Xray] Downloading Xray-core..."
 curl -sSL -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+
+# 检查 unzip 命令是否存在并解压
 if command -v unzip >/dev/null 2>&1; then
-    unzip -o Xray-linux-64.zip >/dev/null 2>&1 || true
+    echo "[Xray] Unzipping Xray-core..."
+    # 尝试解压，不抑制错误
+    unzip -o Xray-linux-64.zip || { echo "[ERROR] Failed to unzip Xray. Exiting."; exit 1; }
+else
+    echo "[ERROR] 'unzip' command not found. Cannot proceed with Xray installation."
+    exit 1
 fi
+
 rm -f Xray-linux-64.zip
-[ -f xray ] && mv -f xray xy || true
-[ -f Xray ] && mv -f Xray xy || true
-chmod +x xy
+
+# 检查解压后的文件名并重命名为 xy
+if [ -f xray ]; then
+    mv -f xray xy
+elif [ -f Xray ]; then
+    mv -f Xray xy
+else
+    # 如果解压后既没有 xray 也没有 Xray，则报错退出
+    echo "[ERROR] Xray executable not found after unzipping (expected 'xray' or 'Xray'). Exiting."
+    exit 1
+fi
+
+# 检查 xy 文件是否存在，确保 chmod 目标存在
+if [ ! -f xy ]; then
+    echo "[ERROR] The 'xy' file is missing after renaming. Cannot proceed."
+    exit 1
+fi
+
+chmod +x xy # 此时 xy 必然存在
 
 openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
 
@@ -66,17 +92,15 @@ curl -sSL -o h2 https://github.com/apernet/hysteria/releases/download/app%2Fv2.6
 chmod +x h2
 openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
 
-# ******** Hysteria2 配置修改开始 ********
 cat > config.yaml <<EOF
 listen: 0.0.0.0:$PORT
 auth:
   type: password
   password: "$HY2_PASSWORD"
-tls: # 增加了 tls 块，以符合 Hysteria2 v2 的配置格式
+tls:
   cert: $WORKDIR/h2/cert.pem
   key: $WORKDIR/h2/key.pem
 EOF
-# ******** Hysteria2 配置修改结束 ********
 
 # ---------------------------
 # Cloudflare Tunnel 交互式登录 + tunnel 创建
