@@ -62,7 +62,12 @@ cat > config.yaml <<EOF
 listen: 127.0.0.1:$PORT
 cert: key.pem
 key: cert.pem
-obfs: $HY2_PASSWORD
+listen: 0.0.0.0:3460
+cert: cert.pem
+key: key.pem
+obfs:
+  type: password
+  password: your-hy2-password
 EOF
 openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout key.pem -out cert.pem -subj "/CN=$PUBLIC_HOSTNAME"
 
