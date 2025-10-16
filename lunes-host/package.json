@@ -1,7 +1,7 @@
 {
   "name": "lunes-host",
   "version": "1.0.0",
-  "description": "Xray & Hysteria2 + cloudflared Startup for Lunes Host",
+  "description": "Xray & Hysteria2 + cloudflared startup",
   "main": "app.js",
   "scripts": {
     "start": "node app.js"
