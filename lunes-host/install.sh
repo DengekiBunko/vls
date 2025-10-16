@@ -29,26 +29,33 @@ mkdir -p "$WORKDIR/xy"
 cd "$WORKDIR/xy"
 
 echo "[Xray] downloading and installing Xray core..."
-curl -sSL -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+# 【强化】使用 '|| exit 1' 确保下载成功
+curl -fsSL -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip || { echo "[Xray ERROR] Failed to download Xray-linux-64.zip"; exit 1; }
+
 if command -v unzip >/dev/null 2>&1; then
-    unzip -o Xray-linux-64.zip >/dev/null 2>&1 || true
+    # 【强化】使用 '|| exit 1' 确保解压成功
+    unzip -o Xray-linux-64.zip || { echo "[Xray ERROR] Failed to unzip Xray-linux-64.zip"; exit 1; }
+else
+    echo "[Xray ERROR] unzip command not found. Please install unzip."
+    exit 1
 fi
+
 rm -f Xray-linux-64.zip
 
-# 检查解压后的文件是否存在并重命名，确保 'xy' 文件能被创建
+# 检查解压后的文件是否存在并重命名
 if [ -f xray ]; then
     mv -f xray xy
 elif [ -f Xray ]; then
     mv -f Xray xy
 else
-    echo "[Xray ERROR] Xray executable (xray or Xray) not found after extraction!"
+    # 这就是你之前看到的错误，但现在有了更严格的检查，它应该不会在前面失败的情况下到达这里。
+    echo "[Xray ERROR] Xray executable (xray or Xray) not found after extraction! Check environment compatibility."
     exit 1
 fi
 
 chmod +x xy
 
-# 【重要修正】由于 Cloudflared 负责 TLS 终止，Xray 本地不再需要 TLS。
-# 移除 tlsSettings 整个块。
+# 移除 tlsSettings 整个块，Xray 接收非 TLS 的 WS 流量。
 cat > config.json <<EOF
 {
   "log": { "loglevel": "warning" },
