@@ -17,15 +17,7 @@
       },
       "streamSettings": {
         "network": "ws",
-        "security": "tls",
-        "tlsSettings": {
-          "certificates": [
-            {
-              "certificateFile": "/home/container/xy/cert.pem",
-              "keyFile": "/home/container/xy/key.pem"
-            }
-          ]
-        },
+        "security": "none",
         "wsSettings": {
           "path": "/YOUR_WS_PATH"
         }
