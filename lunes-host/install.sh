@@ -103,8 +103,9 @@ listen: 0.0.0.0:$PORT
 cert: /home/container/h2/cert.pem
 key: /home/container/h2/key.pem
 obfs:
-  type: password
-  password: "$HY2_PASSWORD"
+  type: salamander
+  salamander:
+    password: "$HY2_PASSWORD"
 # 你可以在这里添加更多 h2 配置项
 EOF
 
