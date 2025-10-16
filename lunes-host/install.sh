@@ -1,36 +1,41 @@
 #!/usr/bin/env sh
 set -eu
 
+# 默认值（可被环境变量覆盖）
 DOMAIN="${DOMAIN:-node68.lunes.host}"
 PORT="${PORT:-10008}"
 UUID="${UUID:-2584b733-9095-4bec-a7d5-62b473540f7a}"
 HY2_PASSWORD="${HY2_PASSWORD:-vevc.HY2.Password}"
-WS_PATH="${WS_PATH:-/wspath}"   # WebSocket path
-CFTUNNEL_TOKEN="${CFTUNNEL_TOKEN:-}"  # Cloudflare Tunnel token (must be provided)
+WS_PATH="${WS_PATH:-/wspath}"
+CFTUNNEL_TOKEN="${CFTUNNEL_TOKEN:-}"  # Cloudflare Tunnel token（可选，但提供则 app.js 会启动 cloudflared）
 
-# --- basic files (from repo) ---
-# 下载 app.js 和 package.json（使用你的 repo 原始地址）
-curl -sSL -o app.js https://raw.githubusercontent.com/DengekiBunko/vls/refs/heads/main/lunes-host/app.js
-curl -sSL -o package.json https://raw.githubusercontent.com/DengekiBunko/vls/refs/heads/main/lunes-host/package.json
+# 确保工作目录
+cd /home/container || exit 1
+mkdir -p /home/container/xy /home/container/h2
 
-# --- Xray (xy) VLESS+WS origin (plain WS, Cloudflare edge will do TLS) ---
-mkdir -p /home/container/xy
+# 下载 app.js 与 package.json（如果你已在容器里预放可跳过）
+curl -sSL -o /home/container/app.js https://raw.githubusercontent.com/DengekiBunko/vls/refs/heads/main/lunes-host/app.js || true
+curl -sSL -o /home/container/package.json https://raw.githubusercontent.com/DengekiBunko/vls/refs/heads/main/lunes-host/package.json || true
+
+# ---------- Xray (xy) 处置 ----------
 cd /home/container/xy
-
-# 下载 Xray 二进制并准备
-curl -sSL -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-unzip -o Xray-linux-64.zip
-rm -f Xray-linux-64.zip
-# the binary inside is usually named xray
-if [ -f xray ]; then
-  mv -f xray xy
-elif [ -f Xray ]; then
-  mv -f Xray xy
+echo "[install] Downloading Xray..."
+curl -sSL -o Xray-linux-64.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
+# 解压（若容器提供 unzip）
+if command -v unzip >/dev/null 2>&1; then
+  unzip -o Xray-linux-64.zip
+  rm -f Xray-linux-64.zip
+else
+  echo "[warn] unzip not found; ensure Xray binary exists in /home/container/xy"
 fi
-chmod +x xy || true
 
-# 写入 origin 的 config.json（plain ws，security: none）
-cat > /home/container/xy/config.json <<'EOF'
+# 移动二进制到 xy（不同包内名称差异）
+if [ -f xray ]; then mv -f xray xy || true; fi
+if [ -f Xray ]; then mv -f Xray xy || true; fi
+chmod +x /home/container/xy/xy || true
+
+# 写入 xray origin 配置（plain WS，Cloudflare edge 负责 TLS）
+cat > /home/container/xy/config.json <<EOF
 {
   "log": { "loglevel": "warning" },
   "inbounds": [
@@ -38,7 +43,7 @@ cat > /home/container/xy/config.json <<'EOF'
       "port": 10008,
       "protocol": "vless",
       "settings": {
-        "clients": [ { "id": "YOUR_UUID", "email": "lunes-ws-tls" } ],
+        "clients": [ { "id": "YOUR_UUID", "email": "lunes-ws" } ],
         "decryption": "none"
       },
       "streamSettings": {
@@ -52,66 +57,64 @@ cat > /home/container/xy/config.json <<'EOF'
 }
 EOF
 
-# 替换占位符（port / uuid / ws_path）
+# 替换占位
 sed -i "s/10008/$PORT/g" /home/container/xy/config.json
 sed -i "s/YOUR_UUID/$UUID/g" /home/container/xy/config.json
-# 确保 path 以 / 开始
+# 确保 path 以 / 开头
 case "$WS_PATH" in
   /*) ;;
   *) WS_PATH="/$WS_PATH" ;;
 esac
-# 把 path 写成 /YOUR_WS_PATH（JSON 中 path 字段）
-# 使用 | 分隔，避免 / 在 sed 中冲突
 sed -i "s|YOUR_WS_PATH|$WS_PATH|g" /home/container/xy/config.json
 
-# --- Hysteria2 (h2) ---
-mkdir -p /home/container/h2
+# ---------- Hysteria2 (h2) ----------
 cd /home/container/h2
-# 下载 hysteria 二进制
-curl -sSL -o h2 https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.2/hysteria-linux-amd64 || true
-chmod +x h2 || true
-# 下载示例 config（若无网络可手写）
-curl -sSL -o config.yaml https://raw.githubusercontent.com/DengekiBunko/vls/refs/heads/main/lunes-host/hysteria-config.yaml || true
-# 替换端口与密码（如果下载到的 config 有占位）
-sed -i "s/10008/$PORT/g" /home/container/h2/config.yaml || true
-sed -i "s/HY2_PASSWORD/$HY2_PASSWORD/g" /home/container/h2/config.yaml || true
+echo "[install] Downloading Hysteria..."
+# 直接下载二进制（示例版本），若失败请替换为可访问的 URL
+curl -sSL -o h2 "https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.2/hysteria-linux-amd64" || true
+chmod +x /home/container/h2/h2 || true
+# 尝试获取示例配置（若仓库路径不可用则忽略）
+curl -sSL -o /home/container/h2/config.yaml https://raw.githubusercontent.com/DengekiBunko/vls/refs/heads/main/lunes-host/hysteria-config.yaml || true
+# 替换端口与密码（如果 config.yaml 存在占位）
+if [ -f /home/container/h2/config.yaml ]; then
+  sed -i "s/10008/$PORT/g" /home/container/h2/config.yaml || true
+  sed -i "s/HY2_PASSWORD/$HY2_PASSWORD/g" /home/container/h2/config.yaml || true
+fi
 
-# --- cloudflared 安装（用于 Named Tunnel / run --token ） ---
-mkdir -p /home/container
+# ---------- cloudflared 直接二进制下载（已改） ----------
 cd /home/container
-echo "Downloading cloudflared..."
-curl -L -o /home/container/cloudflared.tgz "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.tgz"
-tar -xzf /home/container/cloudflared.tgz -C /home/container
-chmod +x /home/container/cloudflared
-rm -f /home/container/cloudflared.tgz
+echo "[install] Downloading cloudflared binary (linux-amd64)..."
+# 直接下载二进制文件（linux-amd64）
+curl -L -o /home/container/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+chmod +x /home/container/cloudflared || true
+# 简单版本检查（如果 cloudflared 可执行）
+if [ -x /home/container/cloudflared ]; then
+  /home/container/cloudflared --version || true
+fi
 
-# --- write node info file (node.txt) ---
-# vless URL - 客户端应使用 wss://<DOMAIN>:443 由 Cloudflare 提供 TLS; origin 是 plain WS behind cloudflared
-encoded_path=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH")
-vlessUrl="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&host=$DOMAIN&path=$encoded_path&sni=$DOMAIN#lunes-ws-tls"
+# ---------- 生成 node.txt（连接信息） ----------
+# vless 用 public domain (Cloudflare edge 提供 TLS). 客户端使用 wss://<PUBLIC_HOST><WS_PATH>
+encoded_path=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH" 2>/dev/null || echo "%2Fwspath")
+vlessUrl="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&host=$DOMAIN&path=$encoded_path&sni=$DOMAIN#lunes-ws"
 echo "$vlessUrl" > /home/container/node.txt
 
-# hysteria (hy2) url （保持原样）
-encodedHy2Pwd=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$HY2_PASSWORD")
+# hysteria url
+encodedHy2Pwd=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$HY2_PASSWORD" 2>/dev/null || echo "vevc.HY2.Password")
 hy2Url="hysteria2://$encodedHy2Pwd@$DOMAIN:$PORT?insecure=1#lunes-hy2"
 echo "$hy2Url" >> /home/container/node.txt
 
-# --- cloudflared startup (using token) ---
-if [ -z "$CFTUNNEL_TOKEN" ]; then
-  echo "WARNING: CFTUNNEL_TOKEN not provided. cloudflared will not be auto-launched by app.js."
-else
-  echo "Cloudflared token provided; app.js will spawn cloudflared tunnel run --token <token>."
-  # We don't run it here; app.js will spawn cloudflared so that node process supervises it.
-fi
-
-# --- finish: make sure working dir is /home/container and node files present ---
-chmod +x /home/container/xy/xy || true
-chmod +x /home/container/h2/h2 || true
-cd /home/container
-
+# ---------- 权限 & 完成信息 ----------
+chmod +x /home/container/app.js || true
+chmod +x /home/container/cloudflared || true
 echo "============================================================"
-echo "Setup complete. Files created under /home/container"
-echo "node info: /home/container/node.txt"
-echo "To start processes run: npm start  (or node app.js)"
-echo "If you supplied CFTUNNEL_TOKEN, app.js will spawn cloudflared with that token."
+echo "Setup complete."
+echo " - Xray config: /home/container/xy/config.json"
+echo " - Hysteria config: /home/container/h2/config.yaml (if present)"
+echo " - node links: /home/container/node.txt"
+if [ -n "$CFTUNNEL_TOKEN" ]; then
+  echo "cloudflared token present; app.js will attempt to start cloudflared with the token."
+else
+  echo "No CFTUNNEL_TOKEN provided. If you want a fixed named tunnel, run with CFTUNNEL_TOKEN set."
+fi
+echo "Start processes: npm start  OR  node /home/container/app.js"
 echo "============================================================"
