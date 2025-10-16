@@ -29,32 +29,41 @@ mkdir -p "$WORKDIR/xy"
 cd "$WORKDIR/xy"
 
 echo "[Xray] downloading and installing Xray core..."
-# 【强化】使用 '|| exit 1' 确保下载成功
-curl -fsSL -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip || { echo "[Xray ERROR] Failed to download Xray-linux-64.zip"; exit 1; }
+XRAY_ZIP="Xray-linux-64.zip"
+XRAY_BIN_NAME="xy" # 目标文件名
 
-if command -v unzip >/dev/null 2>&1; then
-    # 【强化】使用 '|| exit 1' 确保解压成功
-    unzip -o Xray-linux-64.zip || { echo "[Xray ERROR] Failed to unzip Xray-linux-64.zip"; exit 1; }
-else
-    echo "[Xray ERROR] unzip command not found. Please install unzip."
+# 1. 下载文件
+curl -fsSL -o "$XRAY_ZIP" https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip || { echo "[Xray ERROR] Failed to download Xray-linux-64.zip"; exit 1; }
+
+# 2. 检查 unzip 命令
+if ! command -v unzip >/dev/null 2>&1; then
+    echo "[Xray ERROR] unzip command not found. Please ensure 'unzip' is installed in the container environment."
     exit 1
 fi
 
-rm -f Xray-linux-64.zip
+# 3. 解压文件
+unzip -o "$XRAY_ZIP" || { echo "[Xray ERROR] Failed to unzip Xray-linux-64.zip"; exit 1; }
 
-# 检查解压后的文件是否存在并重命名
+# 4. 删除 zip 文件
+rm -f "$XRAY_ZIP"
+
+# 5. 【关键修改】检查并重命名可执行文件
 if [ -f xray ]; then
-    mv -f xray xy
+    mv -f xray "$XRAY_BIN_NAME"
 elif [ -f Xray ]; then
-    mv -f Xray xy
+    mv -f Xray "$XRAY_BIN_NAME"
 else
-    # 这就是你之前看到的错误，但现在有了更严格的检查，它应该不会在前面失败的情况下到达这里。
-    echo "[Xray ERROR] Xray executable (xray or Xray) not found after extraction! Check environment compatibility."
+    echo "[Xray ERROR] Xray executable (xray or Xray) not found after extraction! Check container environment or zip content."
+    # 列出当前目录内容以帮助调试
+    echo "Current directory content:"
+    ls -l
     exit 1
 fi
 
-chmod +x xy
+# 6. 赋予执行权限
+chmod +x "$XRAY_BIN_NAME"
 
+# 7. 生成 Xray 配置
 # 移除 tlsSettings 整个块，Xray 接收非 TLS 的 WS 流量。
 cat > config.json <<EOF
 {
