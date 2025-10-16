@@ -216,26 +216,6 @@ fi
 
 # ---------------------------
 
-# 构建 VLESS 和 HY2 链接
-
-# ---------------------------
-
-ENC_PATH=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH")
-
-ENC_PWD=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$HY2_PASSWORD")
-
-VLESS_URL="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&host=$DOMAIN&path=${ENC_PATH}&sni=$DOMAIN#lunes-ws-tls"
-
-HY2_URL="hysteria2://$ENC_PWD@$DOMAIN:443?insecure=1#lunes-hy2"
-
-echo "$VLESS_URL" > "$WORKDIR/node.txt"
-
-echo "$HY2_URL" >> "$WORKDIR/node.txt"
-
-
-
-# ---------------------------
-
 # 输出信息
 
 # ---------------------------
