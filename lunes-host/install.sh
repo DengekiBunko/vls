@@ -105,9 +105,13 @@ done
 if [ -z "$CERT" ]; then
     echo "[cloudflared] cert.pem not found. 请放置 cert.pem 到 $CLOUDFLARED_DIR 或手动 login"
 else
-    echo "[cloudflared] found cert.pem, creating tunnel ..."
+    echo "[cloudflared] found cert.pem, creating tunnel (if not exists) and routing DNS ..."
     set +e
-    "$CLOUDFLARED_BIN" tunnel create "$TUNNEL_NAME" --credentials-file "$CLOUDFLARED_DIR/$TUNNEL_NAME.json" 2>&1 || true
+    # 【已修改】移除 --credentials-file 参数，让 cloudflared 使用默认路径。
+    # 这样可以避免参数解析问题，并依赖 cloudflared 的默认行为。
+    "$CLOUDFLARED_BIN" tunnel create "$TUNNEL_NAME" 2>&1 || true
+    
+    # 路由 DNS 的命令保持不变
     "$CLOUDFLARED_BIN" tunnel route dns "$TUNNEL_NAME" "$DOMAIN" 2>&1 || true
     set -e
     echo "[cloudflared] initialization done."
