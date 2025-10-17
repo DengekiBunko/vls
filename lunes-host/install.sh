@@ -1,144 +1,121 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 set -eu
 
 # ---------------------------
-# 环境变量（你部署命令传入）
+# 配置变量
 # ---------------------------
-DOMAIN="${DOMAIN:-node24.lunes.host}"
-PORT="${PORT:-3460}"
-UUID="${UUID:-9bdc7c19-2b32-4036-8e26-df7b984f7f9e}"
-HY2_PASSWORD="${HY2_PASSWORD:-jvu2JldmXk5pB1Xz}"
+DOMAIN="${DOMAIN:-node68.lunes.host}"
+PORT="${PORT:-10008}"
+UUID="${UUID:-2584b733-2b32-4036-8e26-df7b984f7f9e}"
+HY2_PASSWORD="${HY2_PASSWORD:-vevc.HY2.Password}"
+WS_PATH="${WS_PATH:-/wspath}"
+WORKDIR="${WORKDIR:-/home/container}"
 
-BASE_DIR="/home/container"
-XRAY_DIR="$BASE_DIR/xy"
-HY2_DIR="$BASE_DIR/hy2"
-APP_FILE="$BASE_DIR/app.js"
-
-mkdir -p "$XRAY_DIR" "$HY2_DIR"
-
-echo "[install] Installing dependencies..."
-apk add --no-cache curl unzip >/dev/null 2>&1 || true
+echo "[init] DOMAIN=$DOMAIN PORT=$PORT UUID=$UUID"
 
 # ---------------------------
-# 下载 Xray
+# 下载 app.js 和 package.json
 # ---------------------------
-echo "[install] Downloading Xray..."
-curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-unzip -o /tmp/xray.zip -d /tmp/xray
-mv /tmp/xray/xray "$XRAY_DIR/xy"
-chmod +x "$XRAY_DIR/xy"
+echo "[node] downloading app.js and package.json ..."
+curl -sSL -o "$WORKDIR/app.js" https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/app.js
+curl -sSL -o "$WORKDIR/package.json" https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/package.json
 
 # ---------------------------
-# 下载 Cloudflared
+# Xray VLESS+WS+TLS 配置
 # ---------------------------
-echo "[install] Downloading cloudflared..."
-curl -L -o /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-chmod +x /usr/local/bin/cloudflared
+mkdir -p "$WORKDIR/xy"
+cd "$WORKDIR/xy"
 
-# ---------------------------
-# 创建 Cloudflare 临时隧道
-# ---------------------------
-echo "[install] Creating temporary tunnel..."
-CF_LOG=$(cloudflared tunnel --url http://localhost:8080 2>&1 | tee /tmp/cf.log | tail -n 10)
-ARGO_DOMAIN=$(grep -oE 'https://[-a-z0-9]+\.trycloudflare\.com' /tmp/cf.log | head -n 1 | sed 's#https://##')
+curl -sSL -o Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+if command -v unzip >/dev/null 2>&1; then unzip -o Xray-linux-64.zip >/dev/null 2>&1 || true; fi
+rm -f Xray-linux-64.zip
+[ -f xray ] && mv -f xray xy || true
+[ -f Xray ] && mv -f Xray xy || true
+chmod +x xy
 
-if [ -z "$ARGO_DOMAIN" ]; then
-  echo "[error] Failed to detect Argo tunnel domain!"
-  cat /tmp/cf.log
-  exit 1
-fi
+openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
+  -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
 
-echo "[install] Temporary tunnel domain: $ARGO_DOMAIN"
-
-# ---------------------------
-# 生成 Xray 配置文件
-# ---------------------------
-cat > "$XRAY_DIR/config.json" <<EOF
+cat > config.json <<EOF
 {
-  "inbounds": [
-    {
-      "port": 8080,
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          { "id": "$UUID", "flow": "none" }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": { "path": "/websocket" }
-      }
+  "log": { "loglevel": "warning" },
+  "inbounds": [{
+    "port": $PORT,
+    "protocol": "vless",
+    "settings": { "clients": [{ "id": "$UUID", "email": "lunes-ws-tls" }], "decryption": "none" },
+    "streamSettings": {
+      "network": "ws",
+      "security": "tls",
+      "tlsSettings": { "certificates": [{ "certificateFile": "$WORKDIR/xy/cert.pem", "keyFile": "$WORKDIR/xy/key.pem" }] },
+      "wsSettings": { "path": "$WS_PATH" }
     }
-  ],
+  }],
   "outbounds": [{ "protocol": "freedom" }]
 }
 EOF
 
 # ---------------------------
-# 生成 Hy2 配置文件
+# Hysteria2 (h2) 配置（直连）
 # ---------------------------
-cat > "$HY2_DIR/config.yaml" <<EOF
-listen: 0.0.0.0:$PORT
-password: "$HY2_PASSWORD"
-tls:
-  sni: "$DOMAIN"
-  alpn: ["h3"]
-  cert: "/etc/ssl/certs/ssl-cert-snakeoil.pem"
-  key: "/etc/ssl/private/ssl-cert-snakeoil.key"
-EOF
-
-# ---------------------------
-# 生成 app.js
-# ---------------------------
-cat > "$APP_FILE" <<EOF
-const { spawn } = require("child_process");
-
-// 定义运行程序
-const apps = [
-  {
-    name: "xray",
-    binaryPath: "/home/container/xy/xy",
-    args: ["-c", "/home/container/xy/config.json"]
-  },
-  {
-    name: "hy2",
-    binaryPath: "/usr/local/bin/hysteria",
-    args: ["server", "-c", "/home/container/hy2/config.yaml"]
-  }
-];
-
-// 启动并保持存活
-function run(app) {
-  console.log("[run]", app.name);
-  const proc = spawn(app.binaryPath, app.args, { stdio: "inherit" });
-  proc.on("exit", (code) => {
-    console.log(\`\${app.name} exited with code \${code}\`);
-    setTimeout(() => run(app), 3000);
-  });
-}
-
-apps.forEach(run);
-EOF
-
-chmod +x "$XRAY_DIR/xy"
+mkdir -p "$WORKDIR/h2"
+cd "$WORKDIR/h2"
+curl -sSL -o h2 https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.2/hysteria-linux-amd64
+curl -sSL -o config.yaml https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/hysteria-config.yaml
+openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
+chmod +x h2
+sed -i "s/10008/$PORT/g" config.yaml
+sed -i "s/HY2_PASSWORD/$HY2_PASSWORD/g" config.yaml
+encodedHy2Pwd=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$HY2_PASSWORD")
+hy2Url="hysteria2://$encodedHy2Pwd@$DOMAIN:$PORT?insecure=1#lunes-hy2"
 
 # ---------------------------
-# 输出节点信息
+# 启动 Cloudflared 临时隧道
 # ---------------------------
-echo ""
-echo "====================== 节点信息 ======================"
-echo "▶ Hy2:"
-echo "  地址: $DOMAIN"
-echo "  端口: $PORT"
-echo "  密码: $HY2_PASSWORD"
-echo "  协议: h3, tls"
-echo ""
-echo "▶ VLESS-WS (Cloudflare 临时隧道):"
-echo "  地址: $ARGO_DOMAIN"
-echo "  端口: 443"
-echo "  UUID: $UUID"
-echo "  传输: ws"
-echo "  路径: /websocket"
-echo "  SNI: $ARGO_DOMAIN"
-echo "======================================================"
+CLOUDFLARED_BIN="$WORKDIR/cloudflared"
+if [ ! -x "$CLOUDFLARED_BIN" ]; then
+  echo "[cloudflared] downloading cloudflared ..."
+  curl -fsSL -o "$CLOUDFLARED_BIN" https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+  chmod +x "$CLOUDFLARED_BIN"
+fi
+
+echo "[cloudflared] starting temporary tunnel ..."
+TUNNEL_LOG="$WORKDIR/tunnel.log"
+"$CLOUDFLARED_BIN" tunnel --url "http://127.0.0.1:$PORT" > "$TUNNEL_LOG" 2>&1 &
+
+# 等待临时域名出现
+TEMP_DOMAIN=""
+for i in $(seq 1 60); do
+  if grep -q "trycloudflare.com" "$TUNNEL_LOG"; then
+    TEMP_DOMAIN=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" "$TUNNEL_LOG" | head -n 1 | sed 's|https://||')
+    break
+  fi
+  echo "[cloudflared] waiting for temporary tunnel ($i/60)..."
+  sleep 2
+done
+
+if [ -z "$TEMP_DOMAIN" ]; then
+  echo "[ERROR] Temporary tunnel domain not found!"
+  TEMP_DOMAIN="localhost"
+else
+  echo "[cloudflared] temporary tunnel established: $TEMP_DOMAIN"
+fi
+
+# ---------------------------
+# 构建 VLESS 和 HY2 链接
+# ---------------------------
+ENC_PATH=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH")
+VLESS_URL="vless://$UUID@$TEMP_DOMAIN:443?encryption=none&security=tls&type=ws&host=$TEMP_DOMAIN&path=${ENC_PATH}&sni=$TEMP_DOMAIN#lunes-ws-tls"
+echo "$VLESS_URL" > "$WORKDIR/node.txt"
+echo "$hy2Url" >> "$WORKDIR/node.txt"
+
+# ---------------------------
+# 输出信息
+# ---------------------------
+echo "============================================================"
+echo "🚀 Node Info"
+echo "VLESS (via temporary tunnel):"
+echo "$VLESS_URL"
+echo "HY2 (direct):"
+echo "$hy2Url"
+echo "============================================================"
+echo "✅ install.sh finished. You can start the server with: node $WORKDIR/app.js"
