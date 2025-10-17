@@ -39,18 +39,18 @@ openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
 cat > config.json <<EOF
 {
   "log": { "loglevel": "warning" },
-  "inbounds": [{
+  "inbounds": [ {
     "port": $PORT,
     "protocol": "vless",
-    "settings": { "clients": [{ "id": "$UUID", "email": "lunes-ws-tls" }], "decryption": "none" },
+    "settings": { "clients": [ { "id": "$UUID", "email": "lunes-ws-tls" } ], "decryption": "none" },
     "streamSettings": {
       "network": "ws",
       "security": "tls",
-      "tlsSettings": { "certificates": [{ "certificateFile": "$WORKDIR/xy/cert.pem", "keyFile": "$WORKDIR/xy/key.pem" }] },
+      "tlsSettings": { "certificates": [ { "certificateFile": "$WORKDIR/xy/cert.pem", "keyFile": "$WORKDIR/xy/key.pem" } ] },
       "wsSettings": { "path": "$WS_PATH" }
     }
-  }],
-  "outbounds": [{ "protocol": "freedom" }]
+  } ],
+  "outbounds": [ { "protocol": "freedom" } ]
 }
 EOF
 
@@ -69,6 +69,13 @@ encodedHy2Pwd=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$HY2
 hy2Url="hysteria2://$encodedHy2Pwd@$DOMAIN:$PORT?insecure=1#lunes-hy2"
 
 # ---------------------------
+# 启动 node 服务
+# ---------------------------
+echo "[node] starting node app..."
+nohup node "$WORKDIR/app.js" > "$WORKDIR/node.log" 2>&1 &
+sleep 5  # 等待服务就绪
+
+# ---------------------------
 # 启动 Cloudflared 临时隧道
 # ---------------------------
 CLOUDFLARED_BIN="$WORKDIR/cloudflared"
@@ -80,31 +87,33 @@ fi
 
 echo "[cloudflared] starting temporary tunnel ..."
 TUNNEL_LOG="$WORKDIR/tunnel.log"
-"$CLOUDFLARED_BIN" tunnel --url "http://127.0.0.1:$PORT" > "$TUNNEL_LOG" 2>&1 &
+"$CLOUDFLARED_BIN" tunnel --metrics localhost:3001 --url "http://127.0.0.1:$PORT" > "$TUNNEL_LOG" 2>&1 &
+sleep 5  # 等待 cloudflared 启动
 
-# 等待临时域名出现
+# ---------------------------
+# 获取临时域名
+# ---------------------------
 TEMP_DOMAIN=""
-for i in $(seq 1 60); do
-  if grep -q "trycloudflare.com" "$TUNNEL_LOG"; then
-    TEMP_DOMAIN=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" "$TUNNEL_LOG" | head -n 1 | sed 's|https://||')
-    break
-  fi
-  echo "[cloudflared] waiting for temporary tunnel ($i/60)..."
-  sleep 2
-done
+if command -v curl >/dev/null 2>&1; then
+  TEMP_DOMAIN=$(curl -s http://127.0.0.1:3001/quicktunnel | grep -oE '"hostname":"[^"]+"' | cut -d':' -f2 | tr -d '"')
+fi
 
 if [ -z "$TEMP_DOMAIN" ]; then
-  echo "[ERROR] Temporary tunnel domain not found!"
+  echo "[ERROR] Temporary tunnel domain not found! Using localhost instead."
   TEMP_DOMAIN="localhost"
 else
   echo "[cloudflared] temporary tunnel established: $TEMP_DOMAIN"
 fi
 
 # ---------------------------
-# 构建 VLESS 和 HY2 链接
+# 构建 VLESS 链接
 # ---------------------------
 ENC_PATH=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH")
 VLESS_URL="vless://$UUID@$TEMP_DOMAIN:443?encryption=none&security=tls&type=ws&host=$TEMP_DOMAIN&path=${ENC_PATH}&sni=$TEMP_DOMAIN#lunes-ws-tls"
+
+# ---------------------------
+# 写入 node.txt
+# ---------------------------
 echo "$VLESS_URL" > "$WORKDIR/node.txt"
 echo "$hy2Url" >> "$WORKDIR/node.txt"
 
