@@ -1,13 +1,14 @@
 const { spawn } = require("child_process");
 const fs = require("fs");
+const path = require("path");
 
-// 检查文件是否存在的异步函数
-function waitForFile(path, retries = 20, delay = 3000) {
+// 检查文件存在（带重试）
+function waitForFile(file, retries = 30, delay = 3000) {
   return new Promise((resolve, reject) => {
     const check = () => {
-      if (fs.existsSync(path)) return resolve(true);
-      if (retries <= 0) return reject(`File not found: ${path}`);
-      console.log(`[wait] ${path} not found, retrying in ${delay / 1000}s...`);
+      if (fs.existsSync(file)) return resolve(true);
+      if (retries <= 0) return reject(`❌ File not found: ${file}`);
+      console.log(`[cloudflared] waiting for ${file}... (${retries} left)`);
       retries--;
       setTimeout(check, delay);
     };
@@ -15,43 +16,52 @@ function waitForFile(path, retries = 20, delay = 3000) {
   });
 }
 
-const apps = [
-  {
-    name: "xray",
-    binaryPath: "/home/container/xy/xy",
-    args: ["-c", "/home/container/xy/config.json"]
-  },
-  {
-    name: "hysteria2",
-    binaryPath: "/home/container/h2/h2",
-    args: ["server", "-c", "/home/container/h2/config.yaml"]
-  }
-];
-
 // 启动并保持进程
 function runProcess(app) {
+  console.log(`[start] ${app.name}`);
   const proc = spawn(app.binaryPath, app.args, { stdio: "inherit" });
   proc.on("exit", (code) => {
-    console.log(`[${app.name}] exited with code ${code}, restarting...`);
-    setTimeout(() => runProcess(app), 3000);
+    console.log(`[restart] ${app.name} exited (${code}), restarting...`);
+    setTimeout(() => runProcess(app), 5000);
   });
 }
 
-// 启动主进程
-apps.forEach(runProcess);
-
-// 额外启动 Cloudflared（在配置文件生成后）
 (async () => {
-  const configPath = "/home/container/.cloudflared/config.yml";
+  // 启动 Xray
+  runProcess({
+    name: "xray",
+    binaryPath: "/home/container/xy/xy",
+    args: ["-c", "/home/container/xy/config.json"]
+  });
+
+  // 启动 Hysteria2
+  runProcess({
+    name: "hysteria2",
+    binaryPath: "/home/container/h2/h2",
+    args: ["server", "-c", "/home/container/h2/config.yaml"]
+  });
+
+  // 等待 cloudflared 的 config.yml
+  const cfDir = "/home/container/.cloudflared";
+  const configFile = path.join(cfDir, "config.yml");
+  const credFile = fs.existsSync(cfDir)
+    ? fs.readdirSync(cfDir).find((f) => f.endsWith(".json"))
+    : null;
+
   try {
-    await waitForFile(configPath, 20, 3000);
-    console.log(`[cloudflared] config.yml found, starting tunnel...`);
+    await waitForFile(configFile);
+    console.log(`[cloudflared] config found: ${configFile}`);
+
+    if (!credFile) {
+      console.warn("[cloudflared] warning: credential file not found, tunnel may fail!");
+    }
+
     runProcess({
       name: "cloudflared",
       binaryPath: "/home/container/cloudflared",
-      args: ["--config", configPath, "tunnel", "run"]
+      args: ["--config", configFile, "tunnel", "run"]
     });
   } catch (err) {
-    console.error(`[cloudflared] start skipped: ${err}`);
+    console.error(err);
   }
 })();
