@@ -1,74 +1,93 @@
-const { exec } = require('child_process');
-const path = require('path');
-const fs = require('fs');
+const { spawn } = require("child_process");
+const fs = require("fs");
+const path = require("path");
 
-const WORKDIR = '/home/container';
-const TUNNEL_NAME = process.env.TUNNEL_NAME || 'mytunnel';
-const DOMAIN = process.env.DOMAIN || 'node24.lunes.host';
-const PORT = process.env.PORT || '3460';
-const UUID = process.env.UUID || '9bdc7c19-2b32-4036-8e26-df7b984f7f9e';
-const HY2_PASSWORD = process.env.HY2_PASSWORD || 'jvu2JldmXk5pB1Xz';
-const WS_PATH = process.env.WS_PATH || '/wspath';
+// 基础路径与变量
+const WORKDIR = "/home/container";
+const DOMAIN = process.env.DOMAIN || "node68.lunes.host";
+const PORT = process.env.PORT || "10008";
+const UUID = process.env.UUID || "2584b733-2b32-4036-8e26-df7b984f7f9e";
+const HY2_PASSWORD = process.env.HY2_PASSWORD || "vevc.HY2.Password";
+const WS_PATH = process.env.WS_PATH || "/wspath";
 
-const xyPath = path.join(WORKDIR, 'xy', 'xy');
-const xyConfig = path.join(WORKDIR, 'xy', 'config.json');
-const hy2Path = path.join(WORKDIR, 'h2', 'h2');
-const hy2Config = path.join(WORKDIR, 'h2', 'config.yaml');
-const cloudflaredPath = path.join(WORKDIR, 'cloudflared');
+const CLOUDFLARED = path.join(WORKDIR, "cloudflared");
+const CF_LOG = path.join(WORKDIR, "cloudflared.log");
+const NODE_TXT = path.join(WORKDIR, "node.txt");
 
-// 临时隧道日志文件
-const cfLog = path.join(WORKDIR, 'cloudflared.log');
-
-// ---------------------------
-// 启动函数
-// ---------------------------
-function runCommand(cmd, name) {
-  console.log(`[Launcher] Starting ${name}...`);
-  const child = exec(cmd);
-  child.stdout.on('data', d => process.stdout.write(`[${name}] ${d}`));
-  child.stderr.on('data', d => process.stderr.write(`[${name} ERROR] ${d}`));
-  child.on('close', code => console.log(`[Launcher] ${name} exited with code ${code}`));
-  return child;
+function log(...args) {
+  console.log("[Launcher]", ...args);
 }
 
-// ---------------------------
-// 启动 Cloudflared 临时隧道
-// ---------------------------
-let TEMP_DOMAIN = '';
-runCommand(`${cloudflaredPath} tunnel --url http://127.0.0.1:${PORT} > ${cfLog} 2>&1 &`, 'Cloudflared');
+// 运行命令并实时输出
+function runProcess(name, cmd, args, options = {}) {
+  const p = spawn(cmd, args, { stdio: "pipe", ...options });
+  p.stdout.on("data", (d) => process.stdout.write(`[${name}] ${d}`));
+  p.stderr.on("data", (d) => process.stderr.write(`[${name} ERROR] ${d}`));
+  p.on("exit", (code) => log(`${name} exited with code ${code}`));
+  return p;
+}
 
-// 等待 5 秒获取临时域名
-setTimeout(() => {
-  try {
-    const log = fs.readFileSync(cfLog, 'utf-8');
-    const match = log.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-    if (match) TEMP_DOMAIN = match[0].replace('https://','');
-  } catch (e) {}
-  if(!TEMP_DOMAIN) TEMP_DOMAIN = 'localhost';
-  console.log(`[Launcher] Temporary Cloudflare domain: ${TEMP_DOMAIN}`);
+// 提取 cloudflared 临时域名
+function extractTunnelHost(logPath) {
+  if (!fs.existsSync(logPath)) return null;
+  const logText = fs.readFileSync(logPath, "utf8");
+  const regexList = [
+    /https?:\/\/([a-z0-9-]+\.trycloudflare\.com)/i,
+    /([a-z0-9-]+\.trycloudflare\.com)/i,
+    /https?:\/\/([a-z0-9-]+\.cfargotunnel\.com)/i,
+    /([a-z0-9-]+\.cfargotunnel\.com)/i,
+  ];
+  for (const r of regexList) {
+    const m = logText.match(r);
+    if (m && m[1]) return m[1];
+  }
+  return null;
+}
 
-  // ---------------------------
-  // 构建 VLESS 链接
-  // ---------------------------
-  const encodePath = encodeURIComponent(WS_PATH);
-  const vlessUrl = `vless://${UUID}@${TEMP_DOMAIN}:443?encryption=none&security=tls&type=ws&host=${TEMP_DOMAIN}&path=${encodePath}&sni=${TEMP_DOMAIN}#lunes-ws-tls`;
-  const hy2Url = `hysteria2://${encodeURIComponent(HY2_PASSWORD)}@${DOMAIN}:${PORT}?insecure=1#lunes-hy2`;
+// -----------------------------
+// 启动流程
+// -----------------------------
+async function main() {
+  log("Starting Xray...");
+  runProcess("Xray", path.join(WORKDIR, "xy/xy"), ["-c", path.join(WORKDIR, "xy/config.json")]);
 
-  fs.writeFileSync(path.join(WORKDIR,'node.txt'), vlessUrl + '\n' + hy2Url);
+  log("Starting Hysteria2...");
+  runProcess("Hysteria2", path.join(WORKDIR, "h2/h2"), ["server", "-c", path.join(WORKDIR, "h2/config.yaml")]);
 
-  console.log('============================================================');
-  console.log('🚀 VLESS WS+TLS & HY2 Node Info');
-  console.log(vlessUrl);
-  console.log(hy2Url);
-  console.log('============================================================');
+  // 删除旧日志
+  try { fs.unlinkSync(CF_LOG); } catch (e) {}
 
-  // ---------------------------
-  // 启动 Xray 和 HY2
-  // ---------------------------
-  runCommand(`${xyPath} -config ${xyConfig}`, 'Xray');
-  runCommand(`${hy2Path} server --config ${hy2Config}`, 'Hysteria2');
+  log("Starting Cloudflared...");
+  const cfProc = runProcess("Cloudflared", CLOUDFLARED, ["tunnel", "--url", `http://127.0.0.1:${PORT}`]);
 
-}, 5000);
+  // 等待 cloudflared 输出域名
+  let tunnelHost = null;
+  for (let i = 0; i < 120; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    tunnelHost = extractTunnelHost(CF_LOG);
+    if (tunnelHost && !tunnelHost.includes("localhost")) break;
+  }
 
-// 防止主进程退出
-setInterval(()=>{}, 1000*60*60);
+  if (!tunnelHost) {
+    log("⚠️ No temporary tunnel domain detected, fallback to localhost.");
+    tunnelHost = "localhost";
+  } else {
+    log("✅ Detected tunnel domain:", tunnelHost);
+  }
+
+  // 构造节点链接
+  const encodedPath = encodeURIComponent(WS_PATH);
+  const encodedPwd = encodeURIComponent(HY2_PASSWORD);
+  const vlessUrl = `vless://${UUID}@${tunnelHost}:443?encryption=none&security=tls&type=ws&host=${tunnelHost}&path=${encodedPath}&sni=${tunnelHost}#lunes-ws-tls`;
+  const hy2Url = `hysteria2://${encodedPwd}@${DOMAIN}:${PORT}?insecure=1#lunes-hy2`;
+
+  fs.writeFileSync(NODE_TXT, `${vlessUrl}\n${hy2Url}\n`, "utf8");
+
+  log("============================================================");
+  log("VLESS (via Cloudflare tunnel):", vlessUrl);
+  log("HY2 (direct):", hy2Url);
+  log("Node info written to:", NODE_TXT);
+  log("============================================================");
+}
+
+main();
