@@ -2,7 +2,7 @@
 set -eu
 
 # ---------------------------
-# 基础变量
+# 基础配置变量
 # ---------------------------
 DOMAIN="${DOMAIN:-node68.lunes.host}"
 PORT="${PORT:-10008}"
@@ -33,11 +33,11 @@ rm -f Xray-linux-64.zip
 [ -f Xray ] && mv -f Xray xy || true
 chmod +x xy
 
-# 先生成本地自签证书
+# 本地自签证书
 openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
   -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
 
-# 先写一个“占位配置”，之后再更新域名
+# 占位 config（SNI 等后面再补）
 cat > config.json <<EOF
 {
   "log": { "loglevel": "warning" },
@@ -57,7 +57,7 @@ cat > config.json <<EOF
 EOF
 
 # ---------------------------
-# 准备 HY2（直连）
+# 准备 Hysteria2（直连）
 # ---------------------------
 mkdir -p "$WORKDIR/h2"
 cd "$WORKDIR/h2"
@@ -71,7 +71,7 @@ encodedHy2Pwd=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$HY2
 HY2_URL="hysteria2://$encodedHy2Pwd@$DOMAIN:$PORT?insecure=1#lunes-hy2"
 
 # ---------------------------
-# 启动 cloudflared 临时隧道
+# 启动 Cloudflared 临时隧道
 # ---------------------------
 CLOUDFLARED_BIN="$WORKDIR/cloudflared"
 if [ ! -x "$CLOUDFLARED_BIN" ]; then
@@ -80,18 +80,18 @@ if [ ! -x "$CLOUDFLARED_BIN" ]; then
   chmod +x "$CLOUDFLARED_BIN"
 fi
 
-echo "[cloudflared] starting temporary tunnel for local Xray ..."
+echo "[cloudflared] starting temporary tunnel for local port $PORT ..."
 TUNNEL_LOG="$WORKDIR/tunnel.log"
 "$CLOUDFLARED_BIN" tunnel --url "http://127.0.0.1:$PORT" > "$TUNNEL_LOG" 2>&1 &
 
-# 等 Cloudflare 输出 trycloudflare 域名
+# 等待 trycloudflare 域名出现
 TEMP_DOMAIN=""
-for i in $(seq 1 90); do
+for i in $(seq 1 60); do
   if grep -q "trycloudflare.com" "$TUNNEL_LOG"; then
     TEMP_DOMAIN=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" "$TUNNEL_LOG" | head -n 1 | sed 's|https://||')
     break
   fi
-  echo "[cloudflared] waiting for temporary domain ($i/90)..."
+  echo "[cloudflared] waiting for temporary tunnel ($i/60)..."
   sleep 2
 done
 
@@ -103,16 +103,35 @@ else
 fi
 
 # ---------------------------
-# 更新 Xray 配置（注入正确域名/SNI）
+# 重新生成 Xray 配置 (带正确 Host)
 # ---------------------------
 cd "$WORKDIR/xy"
-jq --arg sni "$TEMP_DOMAIN" --arg path "$WS_PATH" '
-  .inbounds[0].streamSettings.tlsSettings.serverName = $sni |
-  .inbounds[0].streamSettings.wsSettings.path = $path
-' config.json > config.tmp.json && mv config.tmp.json config.json
+cat > config.json <<EOF
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [{
+    "port": $PORT,
+    "protocol": "vless",
+    "settings": { "clients": [{ "id": "$UUID", "email": "lunes-ws-tls" }], "decryption": "none" },
+    "streamSettings": {
+      "network": "ws",
+      "security": "tls",
+      "tlsSettings": {
+        "serverName": "$TEMP_DOMAIN",
+        "certificates": [{ "certificateFile": "$WORKDIR/xy/cert.pem", "keyFile": "$WORKDIR/xy/key.pem" }]
+      },
+      "wsSettings": {
+        "path": "$WS_PATH",
+        "headers": { "Host": "$TEMP_DOMAIN" }
+      }
+    }
+  }],
+  "outbounds": [{ "protocol": "freedom" }]
+}
+EOF
 
 # ---------------------------
-# 生成 VLESS 链接
+# 生成 VLESS 节点（确保域名正确）
 # ---------------------------
 ENC_PATH=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH")
 VLESS_URL="vless://$UUID@$TEMP_DOMAIN:443?encryption=none&security=tls&type=ws&host=$TEMP_DOMAIN&path=${ENC_PATH}&sni=$TEMP_DOMAIN#lunes-ws-tls"
@@ -121,13 +140,13 @@ echo "$VLESS_URL" > "$WORKDIR/node.txt"
 echo "$HY2_URL" >> "$WORKDIR/node.txt"
 
 # ---------------------------
-# 输出信息
+# 输出节点信息
 # ---------------------------
 echo "============================================================"
 echo "🚀 Node Info"
-echo "VLESS (via temporary tunnel):"
+echo "VLESS (via Cloudflare temporary tunnel):"
 echo "$VLESS_URL"
-echo "HY2 (direct):"
+echo "HY2 (direct connection):"
 echo "$HY2_URL"
 echo "============================================================"
-echo "✅ install.sh finished. You can start the server with: node $WORKDIR/app.js"
+echo "✅ install.sh finished. Start server: node $WORKDIR/app.js"
