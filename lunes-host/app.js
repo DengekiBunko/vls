@@ -29,10 +29,10 @@ function runCommand(command, name) {
 }
 
 // ---------------------------
-// 1. 启动 Cloudflared 临时隧道
+// 1. 已由安装脚本启动 Cloudflared 隧道，无需重复启动
 // ---------------------------
-console.log('[Launcher] Launching Cloudflared temporary tunnel...');
-runCommand(`${cloudflaredPath} tunnel --no-autoupdate run --config ${cloudflaredConfigPath}`, 'Cloudflared');
+// console.log('[Launcher] Launching Cloudflared temporary tunnel...');
+// runCommand(`${cloudflaredPath} tunnel --no-autoupdate run --config ${cloudflaredConfigPath}`, 'Cloudflared');
 
 // ---------------------------
 // 2. 延迟启动 Xray 和 Hysteria2
