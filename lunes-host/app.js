@@ -20,8 +20,7 @@ const hy2Command = `${hy2Path} server --config ${hy2ConfigPath}`;
 // Cloudflared
 const cloudflaredPath = path.join(WORKDIR, 'cloudflared');
 const cloudflaredConfigPath = path.join(WORKDIR, '.cloudflared', 'config.yml');
-// **修改：添加 --loglevel info 以获取详细的启动日志**
-const cloudflaredRunCommand = `${cloudflaredPath} tunnel --no-autoupdate run --config ${cloudflaredConfigPath} --loglevel info`;
+const cloudflaredRunCommand = `${cloudflaredPath} tunnel --no-autoupdate run --config ${cloudflaredConfigPath}`;
 
 // ---------------------------
 // 启动函数
