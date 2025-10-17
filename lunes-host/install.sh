@@ -21,7 +21,7 @@ curl -sSL -o "$WORKDIR/app.js" https://raw.githubusercontent.com/vevc/one-node/r
 curl -sSL -o "$WORKDIR/package.json" https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/package.json
 
 # ---------------------------
-# Xray VLESS+WS+TLS 配置
+# Xray VLESS+WS 配置（明文 WebSocket）
 # ---------------------------
 mkdir -p "$WORKDIR/xy"
 cd "$WORKDIR/xy"
@@ -33,20 +33,16 @@ rm -f Xray-linux-64.zip
 [ -f Xray ] && mv -f Xray xy || true
 chmod +x xy
 
-openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
-  -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
-
 cat > config.json <<EOF
 {
   "log": { "loglevel": "warning" },
   "inbounds": [ {
     "port": $PORT,
     "protocol": "vless",
-    "settings": { "clients": [ { "id": "$UUID", "email": "lunes-ws-tls" } ], "decryption": "none" },
+    "settings": { "clients": [ { "id": "$UUID", "email": "lunes-ws" } ], "decryption": "none" },
     "streamSettings": {
       "network": "ws",
-      "security": "tls",
-      "tlsSettings": { "certificates": [ { "certificateFile": "$WORKDIR/xy/cert.pem", "keyFile": "$WORKDIR/xy/key.pem" } ] },
+      "security": "none",
       "wsSettings": { "path": "$WS_PATH" }
     }
   } ],
@@ -61,7 +57,6 @@ mkdir -p "$WORKDIR/h2"
 cd "$WORKDIR/h2"
 curl -sSL -o h2 https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.2/hysteria-linux-amd64
 curl -sSL -o config.yaml https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/hysteria-config.yaml
-openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
 chmod +x h2
 sed -i "s/10008/$PORT/g" config.yaml
 sed -i "s/HY2_PASSWORD/$HY2_PASSWORD/g" config.yaml
@@ -73,7 +68,7 @@ hy2Url="hysteria2://$encodedHy2Pwd@$DOMAIN:$PORT?insecure=1#lunes-hy2"
 # ---------------------------
 echo "[node] starting node app..."
 nohup node "$WORKDIR/app.js" > "$WORKDIR/node.log" 2>&1 &
-sleep 5  # 等待服务就绪
+sleep 5  # 等待服务监听端口
 
 # ---------------------------
 # 启动 Cloudflared 临时隧道
@@ -88,28 +83,31 @@ fi
 echo "[cloudflared] starting temporary tunnel ..."
 TUNNEL_LOG="$WORKDIR/tunnel.log"
 "$CLOUDFLARED_BIN" tunnel --metrics localhost:3001 --url "http://127.0.0.1:$PORT" > "$TUNNEL_LOG" 2>&1 &
-sleep 5  # 等待 cloudflared 启动
 
 # ---------------------------
-# 获取临时域名
+# 循环等待获取临时域名
 # ---------------------------
 TEMP_DOMAIN=""
-if command -v curl >/dev/null 2>&1; then
+for i in $(seq 1 15); do
   TEMP_DOMAIN=$(curl -s http://127.0.0.1:3001/quicktunnel | grep -oE '"hostname":"[^"]+"' | cut -d':' -f2 | tr -d '"')
-fi
+  if [ -n "$TEMP_DOMAIN" ]; then
+    echo "[cloudflared] temporary tunnel established: $TEMP_DOMAIN"
+    break
+  fi
+  echo "[cloudflared] waiting for temporary tunnel ($i/15)..."
+  sleep 2
+done
 
 if [ -z "$TEMP_DOMAIN" ]; then
   echo "[ERROR] Temporary tunnel domain not found! Using localhost instead."
   TEMP_DOMAIN="localhost"
-else
-  echo "[cloudflared] temporary tunnel established: $TEMP_DOMAIN"
 fi
 
 # ---------------------------
 # 构建 VLESS 链接
 # ---------------------------
 ENC_PATH=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH")
-VLESS_URL="vless://$UUID@$TEMP_DOMAIN:443?encryption=none&security=tls&type=ws&host=$TEMP_DOMAIN&path=${ENC_PATH}&sni=$TEMP_DOMAIN#lunes-ws-tls"
+VLESS_URL="vless://$UUID@$TEMP_DOMAIN:443?encryption=none&security=tls&type=ws&host=$TEMP_DOMAIN&path=${ENC_PATH}&sni=$TEMP_DOMAIN#lunes-ws"
 
 # ---------------------------
 # 写入 node.txt
