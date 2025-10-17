@@ -2,7 +2,7 @@
 set -eu
 
 # ---------------------------
-# 配置变量
+# 基础变量
 # ---------------------------
 DOMAIN="${DOMAIN:-node68.lunes.host}"
 PORT="${PORT:-10008}"
@@ -14,14 +14,14 @@ WORKDIR="${WORKDIR:-/home/container}"
 echo "[init] DOMAIN=$DOMAIN PORT=$PORT UUID=$UUID"
 
 # ---------------------------
-# 下载 app.js 和 package.json
+# 下载 app.js / package.json
 # ---------------------------
 echo "[node] downloading app.js and package.json ..."
 curl -sSL -o "$WORKDIR/app.js" https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/app.js
 curl -sSL -o "$WORKDIR/package.json" https://raw.githubusercontent.com/vevc/one-node/refs/heads/main/lunes-host/package.json
 
 # ---------------------------
-# Xray VLESS+WS+TLS 配置
+# 准备 Xray (xy)
 # ---------------------------
 mkdir -p "$WORKDIR/xy"
 cd "$WORKDIR/xy"
@@ -33,9 +33,11 @@ rm -f Xray-linux-64.zip
 [ -f Xray ] && mv -f Xray xy || true
 chmod +x xy
 
+# 先生成本地自签证书
 openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
   -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
 
+# 先写一个“占位配置”，之后再更新域名
 cat > config.json <<EOF
 {
   "log": { "loglevel": "warning" },
@@ -55,7 +57,7 @@ cat > config.json <<EOF
 EOF
 
 # ---------------------------
-# Hysteria2 (h2) 配置（直连）
+# 准备 HY2（直连）
 # ---------------------------
 mkdir -p "$WORKDIR/h2"
 cd "$WORKDIR/h2"
@@ -66,10 +68,10 @@ chmod +x h2
 sed -i "s/10008/$PORT/g" config.yaml
 sed -i "s/HY2_PASSWORD/$HY2_PASSWORD/g" config.yaml
 encodedHy2Pwd=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$HY2_PASSWORD")
-hy2Url="hysteria2://$encodedHy2Pwd@$DOMAIN:$PORT?insecure=1#lunes-hy2"
+HY2_URL="hysteria2://$encodedHy2Pwd@$DOMAIN:$PORT?insecure=1#lunes-hy2"
 
 # ---------------------------
-# 启动 Cloudflared 临时隧道
+# 启动 cloudflared 临时隧道
 # ---------------------------
 CLOUDFLARED_BIN="$WORKDIR/cloudflared"
 if [ ! -x "$CLOUDFLARED_BIN" ]; then
@@ -78,35 +80,45 @@ if [ ! -x "$CLOUDFLARED_BIN" ]; then
   chmod +x "$CLOUDFLARED_BIN"
 fi
 
-echo "[cloudflared] starting temporary tunnel ..."
+echo "[cloudflared] starting temporary tunnel for local Xray ..."
 TUNNEL_LOG="$WORKDIR/tunnel.log"
 "$CLOUDFLARED_BIN" tunnel --url "http://127.0.0.1:$PORT" > "$TUNNEL_LOG" 2>&1 &
 
-# 等待临时域名出现
+# 等 Cloudflare 输出 trycloudflare 域名
 TEMP_DOMAIN=""
-for i in $(seq 1 60); do
+for i in $(seq 1 90); do
   if grep -q "trycloudflare.com" "$TUNNEL_LOG"; then
     TEMP_DOMAIN=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" "$TUNNEL_LOG" | head -n 1 | sed 's|https://||')
     break
   fi
-  echo "[cloudflared] waiting for temporary tunnel ($i/60)..."
+  echo "[cloudflared] waiting for temporary domain ($i/90)..."
   sleep 2
 done
 
 if [ -z "$TEMP_DOMAIN" ]; then
-  echo "[ERROR] Temporary tunnel domain not found!"
+  echo "[ERROR] Cloudflare temporary tunnel domain not detected!"
   TEMP_DOMAIN="localhost"
 else
-  echo "[cloudflared] temporary tunnel established: $TEMP_DOMAIN"
+  echo "[OK] Temporary tunnel established at: $TEMP_DOMAIN"
 fi
 
 # ---------------------------
-# 构建 VLESS 和 HY2 链接
+# 更新 Xray 配置（注入正确域名/SNI）
+# ---------------------------
+cd "$WORKDIR/xy"
+jq --arg sni "$TEMP_DOMAIN" --arg path "$WS_PATH" '
+  .inbounds[0].streamSettings.tlsSettings.serverName = $sni |
+  .inbounds[0].streamSettings.wsSettings.path = $path
+' config.json > config.tmp.json && mv config.tmp.json config.json
+
+# ---------------------------
+# 生成 VLESS 链接
 # ---------------------------
 ENC_PATH=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH")
 VLESS_URL="vless://$UUID@$TEMP_DOMAIN:443?encryption=none&security=tls&type=ws&host=$TEMP_DOMAIN&path=${ENC_PATH}&sni=$TEMP_DOMAIN#lunes-ws-tls"
+
 echo "$VLESS_URL" > "$WORKDIR/node.txt"
-echo "$hy2Url" >> "$WORKDIR/node.txt"
+echo "$HY2_URL" >> "$WORKDIR/node.txt"
 
 # ---------------------------
 # 输出信息
@@ -116,6 +128,6 @@ echo "🚀 Node Info"
 echo "VLESS (via temporary tunnel):"
 echo "$VLESS_URL"
 echo "HY2 (direct):"
-echo "$hy2Url"
+echo "$HY2_URL"
 echo "============================================================"
 echo "✅ install.sh finished. You can start the server with: node $WORKDIR/app.js"
