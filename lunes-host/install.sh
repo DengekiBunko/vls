@@ -6,7 +6,11 @@ set -eu
 # 配置变量（可通过环境变量覆盖）
 # ---------------------------
 DOMAIN="${DOMAIN:-$(hostname -f)}"
-PORT="${PORT:-10008}"                       # 容器服务端口（Xray 和 Hysteria 都使用这个端口）
+# PORT 用作 Hysteria (HY2) 的对外端口（容器端口），例如：3460
+PORT="${PORT:-10008}"
+# XRAY_PORT 是 Xray (VLESS) 在容器内部监听的端口（cloudflared 会转发到它）
+XRAY_PORT="${XRAY_PORT:-10008}"
+
 UUID="${UUID:-2584b733-2b32-4036-8e26-df7b984f7f9e}"
 HY2_PASSWORD="${HY2_PASSWORD:-vevc.HY2.Password}"
 WS_PATH="${WS_PATH:-/wspath}"
@@ -35,13 +39,13 @@ rm -f Xray-linux-64.zip
 [ -f Xray ] && mv -f Xray xy || true
 chmod +x xy
 
-# Xray: 不在服务端做 TLS（由 Cloudflared 提供外部 TLS）
+# Xray: 使用 XRAY_PORT，服务端不做 TLS（由 Cloudflared 提供外层 TLS）
 cat > config.json <<EOF
 {
   "log": { "loglevel": "warning" },
   "inbounds": [
     {
-      "port": $PORT,
+      "port": $XRAY_PORT,
       "protocol": "vless",
       "settings": {
         "clients": [{ "id": "$UUID", "email": "lunes-ws-tls" }],
@@ -59,7 +63,7 @@ cat > config.json <<EOF
 EOF
 
 # ---------------------------
-# Hysteria2 (h2) 配置（直连容器，启用 TLS）
+# Hysteria2 (h2) 配置（直连容器，启用 TLS，使用 PORT）
 # ---------------------------
 mkdir -p "$WORKDIR/h2"
 cd "$WORKDIR/h2"
@@ -72,13 +76,13 @@ curl -sSL -o config.yaml https://raw.githubusercontent.com/vevc/one-node/refs/he
 openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout key.pem -out cert.pem -subj "/CN=$DOMAIN"
 chmod +x h2
 
-# 将 hysteria-config.yaml 中的端口和密码替换为当前的 PORT/HY2_PASSWORD
-# 注意：我们让 Hysteria 使用和 Xray 相同的 PORT（容器内同端口分流），确保 config.yaml 中的端口项能被替换
+# 将 hysteria-config.yaml 中的默认端口和密码替换为当前的 PORT/HY2_PASSWORD
 sed -i "s/10008/$PORT/g" config.yaml
 sed -i "s/HY2_PASSWORD/$HY2_PASSWORD/g" config.yaml
 
 # ---------------------------
 # Cloudflared 临时隧道（Quick Tunnel）
+#  -> 注意：Cloudflared 将把外部 443 TLS 流量转发到内部的 XRAY_PORT
 # ---------------------------
 CLOUDFLARED_BIN="$WORKDIR/cloudflared"
 CLOUDFLARED_DIR="$WORKDIR/.cloudflared"
@@ -109,21 +113,18 @@ done
 
 if [ ! -f "$CLOUDFLARED_DIR/cert.pem" ]; then
     echo "[cloudflared] cert.pem not found. 请放置 cert.pem 到 $CLOUDFLARED_DIR 或手动 login"
-    # 仍然继续尝试启动隧道（如果用户已经完成 login，cert 会被写入）
 fi
 
-# 启动临时隧道并把输出写到日志，后台运行
+# 启动 quick tunnel，并将外部流量转发到 xr ay 内部端口 XRAY_PORT
 CLOUDFLARED_LOG="$WORKDIR/cloudflared.log"
-echo "[cloudflared] starting temporary tunnel..."
-# 使用 --url 启动 quick tunnel（会在输出中显示 trycloudflare 的域名）
-nohup "$CLOUDFLARED_BIN" tunnel --url "http://localhost:$PORT" --no-autoupdate > "$CLOUDFLARED_LOG" 2>&1 &
+echo "[cloudflared] starting temporary tunnel (forward -> XRAY_PORT=$XRAY_PORT)..."
+nohup "$CLOUDFLARED_BIN" tunnel --url "http://localhost:$XRAY_PORT" --no-autoupdate > "$CLOUDFLARED_LOG" 2>&1 &
 
-# 等待并从日志中提取 trycloudflare 域名（最多等待 60 秒）
+# 等待并从日志中提取 trycloudflare 域名
 TUNNEL_DOMAIN=""
 WAIT2=0 MAX2=60
 while [ $WAIT2 -lt $MAX2 ]; do
     if [ -f "$CLOUDFLARED_LOG" ]; then
-        # 匹配形如 https://xxxx.trycloudflare.com
         TUNNEL_DOMAIN=$(grep -oE "https?://[A-Za-z0-9.-]+\\.trycloudflare\\.com" "$CLOUDFLARED_LOG" | head -n1 | sed -E 's|https?://||')
         if [ -n "$TUNNEL_DOMAIN" ]; then
             break
@@ -145,7 +146,6 @@ fi
 ENC_PATH=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$WS_PATH")
 ENC_PWD=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$HY2_PASSWORD")
 
-# VLESS 链接的 host/sni/域名使用临时隧道域名（优先），回退为容器 DOMAIN
 if [ -n "$TUNNEL_DOMAIN" ]; then
     V_HOST="$TUNNEL_DOMAIN"
 else
