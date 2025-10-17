@@ -1,67 +1,65 @@
-const { spawn } = require("child_process");
-const fs = require("fs");
-const path = require("path");
+cat > /home/container/app.js <<'JS'
+const { exec } = require('child_process');
+const path = require('path');
 
-// 检查文件存在（带重试）
-function waitForFile(file, retries = 30, delay = 3000) {
-  return new Promise((resolve, reject) => {
-    const check = () => {
-      if (fs.existsSync(file)) return resolve(true);
-      if (retries <= 0) return reject(`❌ File not found: ${file}`);
-      console.log(`[cloudflared] waiting for ${file}... (${retries} left)`);
-      retries--;
-      setTimeout(check, delay);
-    };
-    check();
+// ---------------------------
+// 配置变量 (确保这些与 install.sh 中的一致)
+// ---------------------------
+const WORKDIR = '/home/container';
+const TUNNEL_NAME = process.env.TUNNEL_NAME || 'mytunnel'; // 从环境变量读取，或使用默认值
+
+// ---------------------------
+// 构建命令
+// ---------------------------
+const xrayPath = path.join(WORKDIR, 'xy', 'xy');
+const xrayConfigPath = path.join(WORKDIR, 'xy', 'config.json');
+const xrayCommand = `${xrayPath} -config ${xrayConfigPath}`;
+
+const hy2Path = path.join(WORKDIR, 'h2', 'h2');
+const hy2ConfigPath = path.join(WORKDIR, 'h2', 'config.yaml');
+const hy2Command = `${hy2Path} server --config ${hy2ConfigPath}`;
+
+const cloudflaredPath = path.join(WORKDIR, 'cloudflared');
+// 【新增】定义 config.yml 的路径
+const cloudflaredConfigPath = path.join(WORKDIR, '.cloudflared', 'config.yml');
+
+// 【修改】使用 -f 参数指定 config.yml 文件，这是运行已配置隧道的标准方式。
+// 注意：原始脚本中没有TUNNEL_TOKEN，所以我们使用依赖 cert.pem 的方式.
+const cloudflaredRunCommand = `${cloudflaredPath} tunnel --no-autoupdate run --config ${cloudflaredConfigPath}`;
+
+
+// ---------------------------
+// 启动函数
+// ---------------------------
+function runCommand(command, name) {
+  console.log(`[Launcher] Starting ${name}...`);
+  const child = exec(command);
+
+  // 将子进程的输出实时打印到主进程的控制台
+  child.stdout.on('data', (data) => {
+    process.stdout.write(`[${name}] ${data}`);
   });
+
+  child.stderr.on('data', (data) => {
+    process.stderr.write(`[${name} ERROR] ${data}`);
+  });
+
+  child.on('close', (code) => {
+    console.log(`[Launcher] ${name} exited with code ${code}`);
+  });
+
+  return child;
 }
 
-// 启动并保持进程
-function runProcess(app) {
-  console.log(`[start] ${app.name}`);
-  const proc = spawn(app.binaryPath, app.args, { stdio: "inherit" });
-  proc.on("exit", (code) => {
-    console.log(`[restart] ${app.name} exited (${code}), restarting...`);
-    setTimeout(() => runProcess(app), 5000);
-  });
-}
+// ---------------------------
+// 启动所有服务
+// ---------------------------
+runCommand(xrayCommand, 'Xray');
+runCommand(hy2Command, 'Hysteria2');
+runCommand(cloudflaredRunCommand, 'Cloudflared'); // 使用修改后的命令
 
-(async () => {
-  // 启动 Xray
-  runProcess({
-    name: "xray",
-    binaryPath: "/home/container/xy/xy",
-    args: ["-c", "/home/container/xy/config.json"]
-  });
+console.log('[Launcher] All services are being started.');
 
-  // 启动 Hysteria2
-  runProcess({
-    name: "hysteria2",
-    binaryPath: "/home/container/h2/h2",
-    args: ["server", "-c", "/home/container/h2/config.yaml"]
-  });
-
-  // 等待 cloudflared 的 config.yml
-  const cfDir = "/home/container/.cloudflared";
-  const configFile = path.join(cfDir, "config.yml");
-  const credFile = fs.existsSync(cfDir)
-    ? fs.readdirSync(cfDir).find((f) => f.endsWith(".json"))
-    : null;
-
-  try {
-    await waitForFile(configFile);
-    console.log(`[cloudflared] config found: ${configFile}`);
-
-    if (!credFile) {
-      console.warn("[cloudflared] warning: credential file not found, tunnel may fail!");
-    }
-
-    runProcess({
-      name: "cloudflared",
-      binaryPath: "/home/container/cloudflared",
-      args: ["--config", configFile, "tunnel", "run"]
-    });
-  } catch (err) {
-    console.error(err);
-  }
-})();
+// 防止主进程退出
+setInterval(() => {}, 1000 * 60 * 60);
+JS
